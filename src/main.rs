@@ -11,16 +11,13 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
+use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -51,16 +48,22 @@ fn main() -> Result<()> {
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode().context("enable raw mode")?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
+    let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
-    Terminal::new(backend).context("create terminal")
+    let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+    Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(height.saturating_sub(1)),
+        },
+    )
+    .context("create terminal")
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode().context("disable raw mode")?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).context("leave alt screen")?;
     terminal.show_cursor().context("show cursor")?;
+    println!();
     Ok(())
 }
 
@@ -1150,43 +1153,46 @@ fn draw(f: &mut Frame, app: &App) {
         .split(f.size());
 
     if !app.has_chat_activity() {
-        let welcome = centered_rect(78, 48, root[0]);
         let welcome_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
-                Constraint::Length(2),
+                Constraint::Length(5),
+                Constraint::Length(1),
                 Constraint::Length(input_height),
                 Constraint::Length(1),
-                Constraint::Min(1),
+                Constraint::Min(0),
             ])
-            .split(welcome);
+            .split(root[0]);
 
-        let hero = Paragraph::new(Text::from(vec![
+        let dim = Style::default().fg(Color::DarkGray);
+        let banner = Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(" \u{256d}\u{2500} ", dim),
+                Span::styled(
+                    "DAgent",
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" v{}", APP_VERSION), dim),
+                Span::styled(
+                    "                              /help for help",
+                    dim,
+                ),
+            ]),
             Line::from(Span::styled(
-                "DAgent",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Super Agent Console",
+                " \u{2502}  Super Agent Console",
                 Style::default().fg(Color::Gray),
             )),
-        ]))
-        .alignment(Alignment::Center);
-        f.render_widget(hero, welcome_chunks[0]);
-
-        let tips = Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
-                "输入你的任务，DAgent 会并行调度 claude + codex",
-                Style::default().fg(Color::DarkGray),
+                " \u{2502}  \u{8f93}\u{5165}\u{4f60}\u{7684}\u{4efb}\u{52a1}\u{ff0c}DAgent \u{4f1a}\u{5e76}\u{884c}\u{8c03}\u{5ea6} claude + codex",
+                dim,
             )),
             Line::from(Span::styled(
-                "Enter 发送 | Shift+Enter 换行 | Ctrl+K 命令面板",
-                Style::default().fg(Color::DarkGray),
+                " \u{2502}  Enter \u{53d1}\u{9001} \u{00b7} Shift+Enter \u{6362}\u{884c} \u{00b7} Ctrl+K \u{547d}\u{4ee4}\u{9762}\u{677f}",
+                dim,
             )),
-        ]))
-        .alignment(Alignment::Center);
-        f.render_widget(tips, welcome_chunks[1]);
+            Line::from(Span::styled(" \u{2570}\u{2500}", dim)),
+        ]));
+        f.render_widget(banner, welcome_chunks[0]);
 
         let input = Paragraph::new(Text::from(input_lines))
             .style(Style::default().bg(Color::Rgb(28, 32, 40)))
