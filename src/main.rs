@@ -10,13 +10,14 @@ use anyhow::{Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -48,6 +49,15 @@ fn main() -> Result<()> {
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode().context("enable raw mode")?;
+
+    if matches!(supports_keyboard_enhancement(), Ok(true)) {
+        crossterm::execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .ok();
+    }
+
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
@@ -61,6 +71,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags).ok();
     disable_raw_mode().context("disable raw mode")?;
     terminal.show_cursor().context("show cursor")?;
     println!();
@@ -170,6 +181,8 @@ struct App {
     active_provider: Option<Provider>,
 
     last_status: String,
+    flush_pending: Option<Vec<Line<'static>>>,
+    welcomed: bool,
 }
 
 impl App {
@@ -210,6 +223,8 @@ impl App {
             agent_had_chunk: HashMap::new(),
             active_provider: None,
             last_status: "ready".to_string(),
+            flush_pending: None,
+            welcomed: false,
         }
     }
 
@@ -496,6 +511,23 @@ impl App {
             self.input.clear();
             self.cursor = 0;
             return;
+        }
+
+        {
+            let mut flush_lines: Vec<Line> = Vec::new();
+            if !self.welcomed {
+                self.welcomed = true;
+                flush_lines.extend(self.welcome_banner_lines());
+                flush_lines.push(Line::from(""));
+            }
+            if !self.entries.is_empty() {
+                flush_lines.extend(self.render_log_lines());
+                self.entries.clear();
+                self.scroll = 0;
+            }
+            if !flush_lines.is_empty() {
+                self.flush_pending = Some(flush_lines);
+            }
         }
 
         self.history.push(line.clone());
@@ -1098,6 +1130,55 @@ impl App {
 
         lines
     }
+
+    fn welcome_banner_lines(&self) -> Vec<Line<'static>> {
+        let dim = Style::default().fg(Color::DarkGray);
+        vec![
+            Line::from(vec![
+                Span::styled(" \u{256d}\u{2500} ", dim),
+                Span::styled(
+                    "DAgent",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" v{}", APP_VERSION), dim),
+                Span::styled(
+                    "                              /help for help",
+                    dim,
+                ),
+            ]),
+            Line::from(Span::styled(
+                " \u{2502}  Super Agent Console",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                " \u{2502}  \u{8f93}\u{5165}\u{4f60}\u{7684}\u{4efb}\u{52a1}\u{ff0c}DAgent \u{4f1a}\u{5e76}\u{884c}\u{8c03}\u{5ea6} claude + codex",
+                dim,
+            )),
+            Line::from(Span::styled(
+                " \u{2502}  Enter \u{53d1}\u{9001} \u{00b7} Shift+Enter \u{6362}\u{884c} \u{00b7} Ctrl+K \u{547d}\u{4ee4}\u{9762}\u{677f}",
+                dim,
+            )),
+            Line::from(Span::styled(" \u{2570}\u{2500}", dim)),
+        ]
+    }
+
+    fn flush_to_scrollback(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        if let Some(lines) = self.flush_pending.take() {
+            let height = lines.len() as u16;
+            if height > 0 {
+                terminal.insert_before(height, |buf| {
+                    let area = buf.area;
+                    Paragraph::new(Text::from(lines)).render(area, buf);
+                })?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
@@ -1106,6 +1187,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     let mut last_tick = Instant::now();
 
     loop {
+        if app.flush_pending.is_some() {
+            app.flush_to_scrollback(terminal)?;
+        }
+
         terminal.draw(|f| draw(f, &app))?;
 
         let timeout = tick_rate
@@ -1164,34 +1249,7 @@ fn draw(f: &mut Frame, app: &App) {
             ])
             .split(root[0]);
 
-        let dim = Style::default().fg(Color::DarkGray);
-        let banner = Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(" \u{256d}\u{2500} ", dim),
-                Span::styled(
-                    "DAgent",
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" v{}", APP_VERSION), dim),
-                Span::styled(
-                    "                              /help for help",
-                    dim,
-                ),
-            ]),
-            Line::from(Span::styled(
-                " \u{2502}  Super Agent Console",
-                Style::default().fg(Color::Gray),
-            )),
-            Line::from(Span::styled(
-                " \u{2502}  \u{8f93}\u{5165}\u{4f60}\u{7684}\u{4efb}\u{52a1}\u{ff0c}DAgent \u{4f1a}\u{5e76}\u{884c}\u{8c03}\u{5ea6} claude + codex",
-                dim,
-            )),
-            Line::from(Span::styled(
-                " \u{2502}  Enter \u{53d1}\u{9001} \u{00b7} Shift+Enter \u{6362}\u{884c} \u{00b7} Ctrl+K \u{547d}\u{4ee4}\u{9762}\u{677f}",
-                dim,
-            )),
-            Line::from(Span::styled(" \u{2570}\u{2500}", dim)),
-        ]));
+        let banner = Paragraph::new(Text::from(app.welcome_banner_lines()));
         f.render_widget(banner, welcome_chunks[0]);
 
         let input = Paragraph::new(Text::from(input_lines))
@@ -1214,22 +1272,29 @@ fn draw(f: &mut Frame, app: &App) {
             f.set_cursor(cursor_x, cursor_y);
         }
     } else {
+        let log_lines = app.render_log_lines();
+        let log_line_count = log_lines.len() as u16;
+        let hints_h: u16 = 1;
+        let available = root[0]
+            .height
+            .saturating_sub(input_height + hints_h);
+        let log_constraint = if log_line_count <= available {
+            Constraint::Length(log_line_count)
+        } else {
+            Constraint::Min(1)
+        };
+
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(6),
+                log_constraint,
                 Constraint::Length(input_height),
-                Constraint::Length(1),
+                Constraint::Length(hints_h),
+                Constraint::Min(0),
             ])
             .split(root[0]);
 
-        let mut log_lines = app.render_log_lines();
         let body_height = outer[0].height as usize;
-        if body_height > 0 && log_lines.len() < body_height {
-            let mut padded = vec![Line::from(""); body_height - log_lines.len()];
-            padded.extend(log_lines);
-            log_lines = padded;
-        }
         let max_offset = log_lines.len().saturating_sub(body_height) as u16;
         let scroll_offset = if app.autoscroll {
             max_offset
