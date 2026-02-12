@@ -9,6 +9,8 @@ edition = "2021"
 anyhow = "1.0"
 crossterm = "0.27"
 crossbeam-channel = "0.5"
-ratatui = "0.26"
+ratatui = { version = "0.26", features = ["unstable-rendered-line-info"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+rusqlite = { version = "0.31", features = ["bundled"] }
 unicode-width = "0.1"
