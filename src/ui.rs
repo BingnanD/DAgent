@@ -292,10 +292,20 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
             super::Provider::Codex => 1,
         });
 
+        // Fixed-width label so spinner lines stay aligned across providers.
+        let label_width = super::Provider::all()
+            .iter()
+            .map(|p| p.as_str().len())
+            .max()
+            .unwrap_or(6);
+
         if agents.is_empty() {
             // Fallback before any AgentStart event arrives.
-            let active_provider = app.active_provider.unwrap_or(app.primary_provider);
-            let active = active_provider.as_str().to_string();
+            // Always use primary_provider here so the spinner label matches
+            // the provider the user selected (active_provider may have been
+            // overwritten by an AgentStart event from a secondary agent).
+            let active_provider = app.primary_provider;
+            let active = format!("{:width$}", active_provider.as_str(), width = label_width);
             let dot_color = color_with_breath(spinner_base_color(active_provider, theme), frame);
             let elapsed_secs = app.running_elapsed_secs();
             let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
@@ -344,6 +354,7 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
 
                 let chars = app.agent_chars.get(&provider).copied().unwrap_or(0);
                 let chars_str = format_chars(chars);
+                let padded_name = format!("{:width$}", provider.as_str(), width = label_width);
 
                 lines.push(Line::from(vec![
                     Span::styled(
@@ -355,7 +366,7 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
                     Span::styled(
                         format!(
                             " {} | {} | {} | {} ",
-                            provider.as_str(),
+                            padded_name,
                             activity,
                             elapsed,
                             chars_str

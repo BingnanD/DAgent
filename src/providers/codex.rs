@@ -87,7 +87,7 @@ pub(crate) fn run_stream(
         fallback_lines.push(line.clone());
         if let Some(progress) = extract_progress(&line, prefer_zh) {
             if progress != last_progress {
-                let _ = tx.send(WorkerEvent::Tool(progress.clone()));
+                let _ = tx.send(WorkerEvent::Progress(progress.clone()));
                 last_progress = progress;
             }
         }

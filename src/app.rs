@@ -405,6 +405,9 @@ pub(crate) enum WorkerEvent {
     AgentChunk { provider: Provider, chunk: String },
     AgentDone(Provider),
     Tool(String),
+    /// Lightweight progress update – only shown in the spinner area,
+    /// never written to the transcript.
+    Progress(String),
     PromotePrimary { to: Provider, reason: String },
     Error(String),
 }
@@ -1517,6 +1520,20 @@ impl App {
                         // what tools the agent is calling in real-time.
                         self.push_entry(EntryKind::Tool, msg);
                         render_changed = true;
+                    }
+                    Ok(WorkerEvent::Progress(msg)) => {
+                        processed_any = true;
+                        let msg = sanitize_runtime_text(&msg);
+                        if msg.trim().is_empty() {
+                            continue;
+                        }
+                        if let Some(ap) = self.active_provider {
+                            self.agent_tool_event.insert(ap, msg.clone());
+                        }
+                        self.last_tool_event = msg.clone();
+                        self.last_status = format!("progress: {}", truncate(&msg, 48));
+                        // Progress events only update the spinner area;
+                        // they are NOT written to the transcript.
                     }
                     Ok(WorkerEvent::PromotePrimary { to, reason }) => {
                         processed_any = true;
@@ -2677,8 +2694,16 @@ impl App {
                     // Label column: agent name occupies a fixed-width column.
                     // Continuation and wrapped lines are indented to keep content
                     // aligned and prevent text from invading the label column.
-                    let label_col_width = UnicodeWidthStr::width(label.as_str()) + 2; // "label" + " │"
-                    let label_sep = format!("{} \u{2502}", label); // "claude │" or "codex  │"
+                    // Use the longest provider name to keep all labels the same
+                    // width so that content columns stay aligned across agents.
+                    let max_label_width = Provider::all()
+                        .iter()
+                        .map(|p| UnicodeWidthStr::width(p.as_str()))
+                        .max()
+                        .unwrap_or(6);
+                    let label_col_width = max_label_width + 2; // "label" + " │"
+                    let padded_label = format!("{:width$}", label, width = max_label_width);
+                    let label_sep = format!("{} \u{2502}", padded_label);
                     let indent = " ".repeat(label_col_width.saturating_sub(1));
                     let indent_sep = format!("{}\u{2502}", indent); // "       │"
                     let content_width = (width as usize).saturating_sub(label_col_width + 1); // +1 for space after │
@@ -3376,7 +3401,7 @@ mod tests {
         let done_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
 
         assert_eq!(running_header, done_header);
-        assert_eq!(done_header, "codex \u{2502} answer");
+        assert_eq!(done_header, "codex  \u{2502} answer");
     }
 
     #[test]

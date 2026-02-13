@@ -12,7 +12,7 @@ fn claude_permission_mode() -> String {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "acceptEdits".to_string())
+        .unwrap_or_else(|| "bypassPermissions".to_string())
 }
 
 fn claude_allowed_tools() -> Option<String> {
