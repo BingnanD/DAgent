@@ -220,17 +220,27 @@ fn extract_tool_use(line: &str) -> Option<String> {
             match inner_type {
                 "content_block_start" => {
                     let cb = event.get("content_block")?;
-                    if cb.get("type").and_then(Value::as_str)? == "tool_use" {
+                    let cb_type = cb.get("type").and_then(Value::as_str)?;
+                    if cb_type == "tool_use" {
                         let name = cb.get("name").and_then(Value::as_str).unwrap_or("unknown");
-                        Some(format!("claude calling tool: {}", name))
+                        Some(format!("calling tool: {}", name))
+                    } else if cb_type == "tool_result" {
+                        let name = cb.get("name").and_then(Value::as_str).unwrap_or("tool");
+                        Some(format!("finished: {}", name))
                     } else {
                         None
                     }
                 }
+                "message_start" => {
+                    // New turn starting – the agent is thinking.
+                    Some("thinking...".to_string())
+                }
+                "message_stop" | "message_delta" => None,
                 "content_block_stop" => None,
                 _ => None,
             }
         }
+        // Claude Code --print output: subagent / tool_use / tool_result JSON objects
         "tool_use" | "tool" => {
             let name = value
                 .get("name")
@@ -242,20 +252,51 @@ fn extract_tool_use(line: &str) -> Option<String> {
                 .and_then(|v| {
                     if let Some(cmd) = v.get("command").and_then(Value::as_str) {
                         Some(cmd.to_string())
+                    } else if let Some(pat) = v.get("pattern").and_then(Value::as_str) {
+                        Some(pat.to_string())
+                    } else if let Some(path) = v.get("file_path").and_then(Value::as_str) {
+                        Some(path.to_string())
+                    } else if let Some(q) = v.get("query").and_then(Value::as_str) {
+                        Some(q.to_string())
                     } else {
                         serde_json::to_string(v).ok()
                     }
                 })
                 .unwrap_or_default();
             if input_preview.is_empty() {
-                Some(format!("claude tool: {}", name))
+                Some(format!("calling tool: {}", name))
             } else {
                 let preview = if input_preview.len() > 80 {
                     format!("{}...", &input_preview[..80])
                 } else {
                     input_preview
                 };
-                Some(format!("claude tool: {} | {}", name, preview))
+                Some(format!("calling tool: {} | {}", name, preview))
+            }
+        }
+        "tool_result" => {
+            let name = value
+                .get("name")
+                .or_else(|| value.get("tool"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            Some(format!("finished: {}", name))
+        }
+        // Claude Code system-level messages (subagent spawning, etc.)
+        "system" => {
+            let msg = value
+                .get("message")
+                .or_else(|| value.get("text"))
+                .and_then(Value::as_str)?;
+            if msg.trim().is_empty() {
+                None
+            } else {
+                let preview = if msg.len() > 80 {
+                    format!("{}...", &msg[..80])
+                } else {
+                    msg.to_string()
+                };
+                Some(preview)
             }
         }
         _ => None,

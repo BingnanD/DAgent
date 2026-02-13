@@ -25,7 +25,7 @@ use app::{EntryKind, LogEntry, Provider};
 
 pub(crate) use orchestrator::execute_line;
 
-const APP_VERSION: &str = "0.2.1-rs";
+const APP_VERSION: &str = "0.2.2";
 // Breathing dot indicator (kept for potential future use).
 #[allow(dead_code)]
 const SPINNER: &[&str] = &["●"];
@@ -139,8 +139,6 @@ fn default_commands() -> Vec<String> {
         "/commands".to_string(),
         "/primary claude".to_string(),
         "/primary codex".to_string(),
-        "/events on".to_string(),
-        "/events off".to_string(),
         "/theme fjord".to_string(),
         "/theme graphite".to_string(),
         "/theme solarized".to_string(),
@@ -149,6 +147,11 @@ fn default_commands() -> Vec<String> {
         "/tool echo hello".to_string(),
         "/tool time".to_string(),
         "/tool bash ls -la".to_string(),
+        "/mem".to_string(),
+        "/mem show 20".to_string(),
+        "/mem find spinner".to_string(),
+        "/mem prune 200".to_string(),
+        "/mem clear".to_string(),
         "/clear".to_string(),
         "/exit".to_string(),
     ]

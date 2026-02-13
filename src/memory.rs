@@ -3,11 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
-const RECENT_LIMIT: usize = 16;
+const RECENT_LIMIT: usize = 2;
 const SEARCH_LIMIT: usize = 8;
-const CONTEXT_CHAR_LIMIT: usize = 6000;
+const CONTEXT_CHAR_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 500;
 
 #[derive(Debug, Clone)]
@@ -103,6 +103,108 @@ impl MemoryStore {
         .context("clear message rows")?;
         tx.commit().context("commit clear tx")?;
         Ok(())
+    }
+
+    pub(crate) fn session_message_count(&self, session_id: &str) -> Result<usize> {
+        let count = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("count session messages")?;
+        Ok(count.max(0) as usize)
+    }
+
+    pub(crate) fn list_session_lines(&self, session_id: &str, limit: usize) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for item in self.recent_messages(session_id, limit.max(1))? {
+            if let Some(line) = format_line(&item) {
+                out.push(format!("#{} {}", item.id, line));
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn search_session_lines(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let Some(normalized) = normalize_query(query) else {
+            return Ok(Vec::new());
+        };
+
+        let mut items = self.search_messages(session_id, &normalized, limit.max(1))?;
+        items.sort_by_key(|m| m.id);
+
+        let mut out = Vec::new();
+        for item in items {
+            if let Some(line) = format_line(&item) {
+                out.push(format!("#{} {}", item.id, line));
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn prune_session_keep_recent(&self, session_id: &str, keep: usize) -> Result<usize> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("begin prune tx")?;
+
+        let deleted_rows = if keep == 0 {
+            tx.execute(
+                "DELETE FROM messages_fts
+                 WHERE rowid IN (SELECT id FROM messages WHERE session_id = ?1)",
+                params![session_id],
+            )
+            .context("prune clear fts rows")?;
+            tx.execute(
+                "DELETE FROM messages WHERE session_id = ?1",
+                params![session_id],
+            )
+            .context("prune clear message rows")?
+        } else {
+            let cutoff_id = tx
+                .query_row(
+                    "SELECT id
+                     FROM messages
+                     WHERE session_id = ?1
+                     ORDER BY id DESC
+                     LIMIT 1 OFFSET ?2",
+                    params![session_id, (keep - 1) as i64],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .context("query prune cutoff")?;
+
+            let Some(cutoff_id) = cutoff_id else {
+                tx.commit().context("commit prune tx")?;
+                return Ok(0);
+            };
+
+            tx.execute(
+                "DELETE FROM messages_fts
+                 WHERE rowid IN (
+                   SELECT id FROM messages
+                   WHERE session_id = ?1 AND id < ?2
+                 )",
+                params![session_id, cutoff_id],
+            )
+            .context("prune fts rows")?;
+            tx.execute(
+                "DELETE FROM messages
+                 WHERE session_id = ?1 AND id < ?2",
+                params![session_id, cutoff_id],
+            )
+            .context("prune message rows")?
+        };
+
+        tx.commit().context("commit prune tx")?;
+        Ok(deleted_rows)
     }
 
     pub(crate) fn build_context(&self, session_id: &str, prompt: &str) -> Result<String> {

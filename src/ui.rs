@@ -1,50 +1,60 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use super::{App, Mode, Provider, ThemePalette};
 use crate::{input_cursor_position, providers_label, truncate};
 
+const PANEL_PADDING_X: u16 = 1;
+const PANEL_PADDING_Y: u16 = 0;
+const PANEL_HORIZONTAL_INSET: u16 = 2 + PANEL_PADDING_X * 2;
+const PANEL_VERTICAL_INSET: u16 = 2 + PANEL_PADDING_Y * 2;
+
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let frame_area = f.area();
     let theme = app.theme_palette();
     let prompt_prefix = "> ";
     let prompt_width = UnicodeWidthStr::width(prompt_prefix) as u16;
-    let activity_h: u16 = if app.running {
-        let agent_count = app.agent_entries.len().max(1) as u16;
-        1 + agent_count // empty line + N agent lines
+    let composer_width = frame_area.width.saturating_sub(PANEL_HORIZONTAL_INSET).max(1);
+
+    let activity_rows = if app.running {
+        app.agent_entries.len().max(1) as u16
     } else {
         0
     };
-    let hints_h: u16 = if app.inline_hints().is_empty() { 0 } else { 1 };
-    // Reserve rows for: activity(0 or 3) + gaps(2~3) + hints(0~1) + status(1).
-    let fixed_rows = activity_h + 2 + hints_h + 1;
+    let activity_h = if activity_rows > 0 {
+        activity_rows.saturating_add(PANEL_VERTICAL_INSET)
+    } else {
+        0
+    };
+    let hints_h = if app.inline_hints().is_empty() {
+        0
+    } else {
+        1u16.saturating_add(PANEL_VERTICAL_INSET)
+    };
+    let status_h: u16 = 1 + PANEL_VERTICAL_INSET;
+    let fixed_rows = activity_h + hints_h + status_h;
     let max_input_height = frame_area.height.saturating_sub(fixed_rows).max(3);
     let input_height = app
-        .input_height(frame_area.width.max(1), prompt_width)
-        .saturating_add(2)
+        .input_height(composer_width, prompt_width)
+        .saturating_add(PANEL_VERTICAL_INSET)
         .min(max_input_height);
-    let prompt_style = Style::default()
-        .fg(theme.prompt)
-        .add_modifier(Modifier::BOLD);
+    let prompt_style = theme.prompt_style();
     let input_lines = build_input_lines(app, prompt_prefix, prompt_style, theme);
+
     // Composer-only viewport: transcript is appended above via insert_before.
-    // Layout: [gap] [activity] [gap] [input] [hints] [gap] [status]
     let mut constraints = Vec::new();
     if activity_h > 0 {
-        constraints.push(Constraint::Length(1)); // gap above activity
         constraints.push(Constraint::Length(activity_h));
     }
-    constraints.push(Constraint::Length(1)); // gap above input
     constraints.push(Constraint::Length(input_height));
     if hints_h > 0 {
         constraints.push(Constraint::Length(hints_h));
     }
-    constraints.push(Constraint::Length(1)); // gap above status
-    constraints.push(Constraint::Length(1)); // status bar
+    constraints.push(Constraint::Length(status_h));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -53,14 +63,12 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 
     let mut section_idx = 0usize;
     let activity_chunk = if activity_h > 0 {
-        section_idx += 1; // skip gap
         let c = chunks[section_idx];
         section_idx += 1;
         Some(c)
     } else {
         None
     };
-    section_idx += 1; // skip gap above input
     let input_chunk = chunks[section_idx];
     section_idx += 1;
     let hint_chunk = if hints_h > 0 {
@@ -70,55 +78,64 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     } else {
         None
     };
-    section_idx += 1; // skip gap above status
     let status_chunk = chunks[section_idx];
 
     // Real-time activity area between transcript and composer.
     if let Some(area) = activity_chunk {
         let activity_lines = build_activity_lines(app, theme);
-        let activity_panel = Paragraph::new(Text::from(activity_lines));
+        let activity_panel = Paragraph::new(Text::from(activity_lines))
+            .style(theme.panel_surface_style())
+            .block(panel_block(theme, "activity"))
+            .wrap(Wrap { trim: false });
         f.render_widget(activity_panel, area);
     }
 
     // Input area
     let input = Paragraph::new(Text::from(input_lines))
-        .style(Style::default().bg(theme.input_bg))
+        .style(theme.input_surface_style())
+        .block(panel_block(theme, "compose"))
         .wrap(Wrap { trim: false });
     f.render_widget(input, input_chunk);
 
     // Hints
     if let Some(area) = hint_chunk {
         let hint_line = build_hint_line(app, theme);
-        let hint_panel = Paragraph::new(Text::from(vec![hint_line]));
+        let hint_panel = Paragraph::new(Text::from(vec![hint_line]))
+            .style(theme.panel_surface_style())
+            .block(panel_block(theme, "suggestions"));
         f.render_widget(hint_panel, area);
     }
 
     // Cursor
     if matches!(app.mode, Mode::Normal) {
-        let top_padding: u16 = 1;
-        let (cx, cy) =
-            input_cursor_position(&app.input, app.cursor, input_chunk.width, prompt_width);
-        let cursor_x = input_chunk.x + cx.min(input_chunk.width.saturating_sub(1));
-        let cursor_y = input_chunk.y
-            + cy.saturating_add(top_padding)
-                .min(input_chunk.height.saturating_sub(1));
+        let content_width = input_chunk
+            .width
+            .saturating_sub(PANEL_HORIZONTAL_INSET)
+            .max(1);
+        let content_height = input_chunk
+            .height
+            .saturating_sub(PANEL_VERTICAL_INSET)
+            .max(1);
+        let (cx, cy) = input_cursor_position(&app.input, app.cursor, content_width, prompt_width);
+        let cursor_x =
+            input_chunk.x + 1 + PANEL_PADDING_X + cx.min(content_width.saturating_sub(1));
+        let cursor_y =
+            input_chunk.y + 1 + PANEL_PADDING_Y + cy.min(content_height.saturating_sub(1));
         f.set_cursor_position((cursor_x, cursor_y));
     }
 
-    // Status bar: compact, only essential info
+    // Status bar
     let cancel_hint = if app.running { " | Esc cancel" } else { "" };
     let status = Paragraph::new(format!(
-        " {} | {}{} | Ctrl+K cmds | Ctrl+C exit",
+        "{} | {}{} | Ctrl+R history | Ctrl+C exit",
         app.primary_provider.as_str(),
         providers_label(&app.available_providers),
         cancel_hint,
     ))
-    .style(Style::default().fg(theme.status_text));
+    .style(theme.status_style())
+    .block(panel_block(theme, "status"));
     f.render_widget(status, status_chunk);
 
-    if matches!(app.mode, Mode::CommandPalette) {
-        draw_palette(f, app, theme);
-    }
     if matches!(app.mode, Mode::HistorySearch) {
         draw_history(f, app, theme);
     }
@@ -132,6 +149,31 @@ pub(super) fn draw_exit(f: &mut Frame, app: &App) {
     f.render_widget(Clear, f.area());
 }
 
+fn panel_block(theme: ThemePalette, title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.panel_border_style())
+        .title(Span::styled(format!(" {} ", title), theme.title_style()))
+        .padding(Padding::new(
+            PANEL_PADDING_X,
+            PANEL_PADDING_X,
+            PANEL_PADDING_Y,
+            PANEL_PADDING_Y,
+        ))
+        .style(theme.panel_surface_style())
+}
+
+fn modal_block(theme: ThemePalette, title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.panel_border_style())
+        .title(Span::styled(format!(" {} ", title), theme.title_style()))
+        .padding(Padding::new(1, 1, 0, 0))
+        .style(theme.panel_surface_style())
+}
+
 fn build_input_lines(
     app: &App,
     prompt_prefix: &str,
@@ -139,20 +181,16 @@ fn build_input_lines(
     theme: ThemePalette,
 ) -> Vec<Line<'static>> {
     if app.input.is_empty() {
-        return vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(prompt_prefix.to_string(), prompt_style),
-                Span::styled(
-                    "Type message. Enter send, Shift+Enter newline",
-                    Style::default().fg(theme.muted_text),
-                ),
-            ]),
-            Line::from(""),
-        ];
+        return vec![Line::from(vec![
+            Span::styled(prompt_prefix.to_string(), prompt_style),
+            Span::styled(
+                "Type message. Enter send, Shift+Enter newline",
+                theme.muted_style(),
+            ),
+        ])];
     }
 
-    let mut lines = vec![Line::from("")];
+    let mut lines = Vec::new();
     let indent = " ".repeat(prompt_prefix.chars().count());
     for (idx, part) in app.input.split('\n').enumerate() {
         if idx == 0 {
@@ -167,7 +205,6 @@ fn build_input_lines(
             ]));
         }
     }
-    lines.push(Line::from(""));
     lines
 }
 
@@ -182,25 +219,16 @@ fn build_hint_line(app: &App, theme: ThemePalette) -> Line<'static> {
     } else {
         " slash suggestions (Tab cycle): "
     };
-    let mut spans = vec![Span::styled(label, Style::default().fg(theme.muted_text))];
+    let mut spans = vec![Span::styled(label, theme.muted_style())];
     let selected = app.slash_hint_idx.min(hints.len().saturating_sub(1));
     for (i, hint) in hints.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
         if i == selected {
-            spans.push(Span::styled(
-                hint.clone(),
-                Style::default()
-                    .fg(theme.highlight_fg)
-                    .bg(theme.highlight_bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            spans.push(Span::styled(hint.clone(), theme.hint_selected_style()));
         } else {
-            spans.push(Span::styled(
-                hint.clone(),
-                Style::default().fg(theme.muted_text),
-            ));
+            spans.push(Span::styled(hint.clone(), theme.muted_style()));
         }
     }
     Line::from(spans)
@@ -255,7 +283,7 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
     if app.running {
         let frame = app.spinner_idx % BREATH_SCALE_PCT.len();
 
-        let mut lines = vec![Line::from("")];
+        let mut lines = Vec::new();
 
         // Collect active agents from agent_entries, sorted deterministically.
         let mut agents: Vec<_> = app.agent_entries.keys().copied().collect();
@@ -307,10 +335,11 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
                 let verb_idx =
                     (initial_idx + (elapsed_secs as usize / 8)) % ACTIVITY_VERBS.len();
                 let verb = ACTIVITY_VERBS[verb_idx];
-                let activity = if app.last_tool_event.trim().is_empty() {
+                let agent_event = app.agent_tool_event.get(&provider).map(|s| s.as_str()).unwrap_or("");
+                let activity = if agent_event.trim().is_empty() {
                     verb.to_string()
                 } else {
-                    truncate(&app.last_tool_event, 56)
+                    truncate(agent_event, 56)
                 };
 
                 let chars = app.agent_chars.get(&provider).copied().unwrap_or(0);
@@ -341,67 +370,47 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
 
         lines
     } else {
-        vec![Line::from(" ")]
+        Vec::new()
     }
-}
-
-fn draw_palette(f: &mut Frame, app: &App, theme: ThemePalette) {
-    let area = centered_rect(70, 58, f.area());
-    let items = app.filtered_commands();
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "Command Palette",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("query: {}", app.palette_query)),
-        Line::from(""),
-    ];
-    if items.is_empty() {
-        lines.push(Line::from("(no match)"));
-    } else {
-        for (i, cmd) in items.iter().take(12).enumerate() {
-            let prefix = if i == app.palette_idx { "> " } else { "  " };
-            lines.push(Line::from(format!("{}{}", prefix, cmd)));
-        }
-    }
-    let panel = Paragraph::new(lines).style(
-        Style::default()
-            .bg(theme.panel_bg)
-            .fg(theme.panel_fg)
-            .add_modifier(Modifier::BOLD),
-    );
-    f.render_widget(Clear, area);
-    f.render_widget(panel, area);
 }
 
 fn draw_history(f: &mut Frame, app: &App, theme: ThemePalette) {
     let area = centered_rect(70, 58, f.area());
     let items = app.filtered_history();
     let mut lines = vec![
-        Line::from(Span::styled(
-            "History Search",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("query: {}", app.history_query)),
+        Line::from(vec![
+            Span::styled("query: ", theme.muted_style()),
+            Span::styled(app.history_query.clone(), theme.secondary_style()),
+        ]),
         Line::from(""),
     ];
     if items.is_empty() {
-        lines.push(Line::from("(no match)"));
+        lines.push(Line::from(Span::styled("(no match)", theme.muted_style())));
     } else {
         for (i, item) in items.iter().enumerate() {
-            let prefix = if i == app.history_idx { "> " } else { "  " };
-            lines.push(Line::from(format!("{}{}", prefix, item)));
+            if i == app.history_idx {
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", item),
+                    theme.hint_selected_style(),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", item),
+                    theme.body_style(),
+                )));
+            }
         }
     }
     lines.push(Line::from(""));
-    lines.push(Line::from("Enter apply | Esc close"));
+    lines.push(Line::from(Span::styled(
+        "Enter apply | Esc close",
+        theme.muted_style(),
+    )));
 
-    let panel = Paragraph::new(lines).style(
-        Style::default()
-            .bg(theme.panel_bg)
-            .fg(theme.panel_fg)
-            .add_modifier(Modifier::BOLD),
-    );
+    let panel = Paragraph::new(lines)
+        .style(theme.panel_surface_style())
+        .block(modal_block(theme, "history search"))
+        .wrap(Wrap { trim: false });
     f.render_widget(Clear, area);
     f.render_widget(panel, area);
 }
@@ -411,29 +420,37 @@ fn draw_approval(f: &mut Frame, app: &App, theme: ThemePalette) {
     let pending = app.approval.as_ref();
     let lines = if let Some(p) = pending {
         vec![
+            Line::from(vec![
+                Span::styled("tool: ", theme.muted_style()),
+                Span::styled(
+                    p.tool.clone(),
+                    Style::default()
+                        .fg(theme.approval_title)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(Span::styled(p.reason.clone(), theme.body_style())),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("cmd: ", theme.muted_style()),
+                Span::styled(truncate(&p.line, 90), theme.secondary_style()),
+            ]),
+            Line::from(""),
             Line::from(Span::styled(
-                "Approval Required",
-                Style::default()
-                    .fg(theme.approval_title)
-                    .add_modifier(Modifier::BOLD),
+                "[y] approve once   [a] always allow   [n] deny",
+                theme.muted_style(),
             )),
-            Line::from(""),
-            Line::from(format!("tool: {}", p.tool)),
-            Line::from(p.reason.clone()),
-            Line::from(""),
-            Line::from(format!("cmd: {}", truncate(&p.line, 90))),
-            Line::from(""),
-            Line::from("[y] approve once   [a] always allow   [n] deny"),
         ]
     } else {
-        vec![Line::from("No pending approval")]
+        vec![Line::from(Span::styled(
+            "No pending approval",
+            theme.muted_style(),
+        ))]
     };
-    let panel = Paragraph::new(lines).style(
-        Style::default()
-            .bg(theme.panel_bg)
-            .fg(theme.approval_title)
-            .add_modifier(Modifier::BOLD),
-    );
+    let panel = Paragraph::new(lines)
+        .style(theme.panel_surface_style())
+        .block(modal_block(theme, "approval required"))
+        .wrap(Wrap { trim: false });
     f.render_widget(Clear, area);
     f.render_widget(panel, area);
 }

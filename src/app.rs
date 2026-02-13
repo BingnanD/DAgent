@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     cleaned_assistant_text, default_commands, detect_available_providers, execute_line,
@@ -29,6 +29,11 @@ use crate::{
 
 const COLLAPSED_PASTE_CHAR_THRESHOLD: usize = 800;
 const COLLAPSED_PASTE_LINE_THRESHOLD: usize = 12;
+const MEM_SHOW_DEFAULT_LIMIT: usize = 20;
+const MEM_SHOW_MAX_LIMIT: usize = 200;
+const MEM_FIND_DEFAULT_LIMIT: usize = 12;
+const MEM_PRUNE_DEFAULT_KEEP: usize = 200;
+const STARTUP_BANNER_PREFIX: &str = "__startup_banner__:";
 
 #[path = "ui.rs"]
 pub(crate) mod ui;
@@ -303,6 +308,59 @@ pub(crate) struct ThemePalette {
     pub(crate) bullet: Color,
 }
 
+impl ThemePalette {
+    pub(crate) fn prompt_style(self) -> Style {
+        Style::default()
+            .fg(self.prompt)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub(crate) fn title_style(self) -> Style {
+        Style::default()
+            .fg(self.banner_title)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub(crate) fn body_style(self) -> Style {
+        Style::default().fg(self.assistant_text)
+    }
+
+    pub(crate) fn body_processing_style(self) -> Style {
+        Style::default().fg(self.assistant_processing_text)
+    }
+
+    pub(crate) fn secondary_style(self) -> Style {
+        Style::default().fg(self.system_text)
+    }
+
+    pub(crate) fn muted_style(self) -> Style {
+        Style::default().fg(self.muted_text)
+    }
+
+    pub(crate) fn status_style(self) -> Style {
+        Style::default().fg(self.status_text)
+    }
+
+    pub(crate) fn panel_surface_style(self) -> Style {
+        Style::default().bg(self.panel_bg).fg(self.panel_fg)
+    }
+
+    pub(crate) fn panel_border_style(self) -> Style {
+        Style::default().fg(self.highlight_bg)
+    }
+
+    pub(crate) fn input_surface_style(self) -> Style {
+        Style::default().bg(self.input_bg).fg(self.input_text)
+    }
+
+    pub(crate) fn hint_selected_style(self) -> Style {
+        Style::default()
+            .fg(self.highlight_fg)
+            .bg(self.highlight_bg)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(crate) enum EntryKind {
     User,
@@ -336,7 +394,6 @@ struct PendingPaste {
 #[derive(Clone, Copy, Debug)]
 enum Mode {
     Normal,
-    CommandPalette,
     HistorySearch,
     Approval,
 }
@@ -355,7 +412,6 @@ pub(crate) enum WorkerEvent {
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionSnapshot {
     primary_provider: Provider,
-    show_tool_events: bool,
     #[serde(default = "default_theme")]
     theme: ThemePreset,
     entries: Vec<LogEntry>,
@@ -366,6 +422,20 @@ struct SessionSnapshot {
 
 fn default_session_id() -> String {
     "default".to_string()
+}
+
+fn restore_transcript_on_start(memory_available: bool) -> bool {
+    if !memory_available {
+        return true;
+    }
+
+    match std::env::var("DAGENT_RESTORE_TRANSCRIPT") {
+        Ok(raw) => matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
 }
 
 /// Cached rendering state to avoid recomputing log lines and scroll bounds every frame.
@@ -528,7 +598,17 @@ fn flush_new_log_lines(
     app: &App,
     flushed_log_lines: &mut Vec<Line<'static>>,
 ) -> Result<()> {
-    let lines = app.cached_log_lines();
+    // When running, only flush stable (non-streaming) entries so that the user
+    // message remains visible in scrollback. When idle, flush everything.
+    let lines: &[Line<'static>];
+    let stable_buf;
+    if app.running {
+        let w = terminal.size().map(|s| s.width).unwrap_or(80).max(1);
+        stable_buf = app.stable_log_lines(w);
+        lines = &stable_buf;
+    } else {
+        lines = app.cached_log_lines();
+    }
     if lines.is_empty() {
         flushed_log_lines.clear();
         return Ok(());
@@ -597,22 +677,76 @@ fn compute_append_ranges(
     flushed_plain: &[String],
     current_plain: &[String],
 ) -> Vec<(usize, usize)> {
-    let mut common_prefix = 0usize;
-    while common_prefix < flushed_plain.len()
-        && common_prefix < current_plain.len()
-        && flushed_plain[common_prefix] == current_plain[common_prefix]
-    {
-        common_prefix += 1;
-    }
-
-    if common_prefix == current_plain.len() && common_prefix == flushed_plain.len() {
+    if flushed_plain == current_plain {
         return Vec::new();
     }
-    if common_prefix < current_plain.len() {
-        vec![(common_prefix, current_plain.len())]
-    } else {
-        Vec::new()
+    if flushed_plain.len() > current_plain.len() {
+        return Vec::new();
     }
+    if current_plain[..flushed_plain.len()] == *flushed_plain {
+        return vec![(flushed_plain.len(), current_plain.len())];
+    }
+    // Existing lines changed in place. We cannot patch scrollback safely.
+    Vec::new()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupBannerRow<'a> {
+    Title(&'a str),
+    Agents(&'a str),
+    Cwd(&'a str),
+    Keys(&'a str),
+}
+
+fn parse_startup_banner_row(text: &str) -> Option<StartupBannerRow<'_>> {
+    let payload = text.strip_prefix(STARTUP_BANNER_PREFIX)?;
+    let (kind, value) = payload.split_once('|')?;
+    match kind {
+        "title" => Some(StartupBannerRow::Title(value)),
+        "agents" => Some(StartupBannerRow::Agents(value)),
+        "cwd" => Some(StartupBannerRow::Cwd(value)),
+        "keys" => Some(StartupBannerRow::Keys(value)),
+        _ => None,
+    }
+}
+
+fn is_startup_banner_entry(entry: &LogEntry) -> bool {
+    matches!(entry.kind, EntryKind::System) && parse_startup_banner_row(&entry.text).is_some()
+}
+
+fn banner_card_outer_width(viewport_width: u16) -> usize {
+    let max_outer = viewport_width.max(1) as usize;
+    if max_outer >= 26 {
+        max_outer.min(76)
+    } else {
+        max_outer
+    }
+}
+
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > max_width {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out
+}
+
+fn fit_to_display_width(text: &str, width: usize) -> String {
+    let mut fitted = truncate_display_width(text, width);
+    let used = UnicodeWidthStr::width(fitted.as_str());
+    if used < width {
+        fitted.push_str(&" ".repeat(width - used));
+    }
+    fitted
 }
 
 struct App {
@@ -638,13 +772,10 @@ struct App {
     history_idx: usize,
 
     commands: Vec<String>,
-    palette_query: String,
-    palette_idx: usize,
     slash_hint_idx: usize,
 
     approval: Option<PendingApproval>,
     allow_high_risk_tools: HashSet<String>,
-    show_tool_events: bool,
     theme: ThemePreset,
 
     rx: Option<Receiver<WorkerEvent>>,
@@ -660,6 +791,7 @@ struct App {
     agent_chars: HashMap<Provider, usize>,
     agent_verb_idx: HashMap<Provider, usize>,
     agent_started_at: HashMap<Provider, Instant>,
+    agent_tool_event: HashMap<Provider, String>,
 
     last_status: String,
     session_id: String,
@@ -708,12 +840,9 @@ impl App {
             history_query: String::new(),
             history_idx: 0,
             commands: default_commands(),
-            palette_query: String::new(),
-            palette_idx: 0,
             slash_hint_idx: 0,
             approval: None,
             allow_high_risk_tools: HashSet::new(),
-            show_tool_events: true,
             theme: default_theme(),
             rx: None,
             assistant_idx: None,
@@ -728,6 +857,7 @@ impl App {
             agent_chars: HashMap::new(),
             agent_verb_idx: HashMap::new(),
             agent_started_at: HashMap::new(),
+            agent_tool_event: HashMap::new(),
             last_status: "ready".to_string(),
             session_id: default_session_id(),
             memory,
@@ -762,6 +892,7 @@ impl App {
         self.agent_chars.clear();
         self.agent_verb_idx.clear();
         self.agent_started_at.clear();
+        self.agent_tool_event.clear();
         self.active_provider = None;
         self.run_started_at = None;
         self.run_target.clear();
@@ -792,6 +923,12 @@ impl App {
             elapsed_secs: None,
         });
         self.follow_scroll();
+    }
+
+    fn last_system_entry_is(&self, text: &str) -> bool {
+        self.entries
+            .last()
+            .is_some_and(|entry| matches!(entry.kind, EntryKind::System) && entry.text == text)
     }
 
     /// Invalidate render cache and update scroll to follow content.
@@ -850,6 +987,31 @@ impl App {
 
     pub(super) fn cached_log_lines(&self) -> &[Line<'static>] {
         &self.render_cache.lines
+    }
+
+    /// Return the index of the first currently-streaming entry, or entries.len() if none.
+    fn first_streaming_entry_idx(&self) -> usize {
+        if !self.running {
+            return self.entries.len();
+        }
+        let mut min_idx = self.entries.len();
+        if let Some(idx) = self.assistant_idx {
+            min_idx = min_idx.min(idx);
+        }
+        for &idx in self.agent_entries.values() {
+            min_idx = min_idx.min(idx);
+        }
+        min_idx
+    }
+
+    /// Render only the entries that are stable (not currently being streamed).
+    fn stable_log_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let stable_count = self.first_streaming_entry_idx();
+        if stable_count == 0 {
+            return Vec::new();
+        }
+        // Reuse render_entries_lines logic but only up to stable_count entries.
+        self.render_entries_lines_range(width, 0, stable_count)
     }
     fn update_viewport(&mut self, width: u16, height: u16) {
         self.viewport_width = width.max(1);
@@ -948,20 +1110,28 @@ impl App {
             .unwrap_or_else(|| "<unknown>".to_string());
         self.push_entry(
             EntryKind::System,
-            format!("DAgent {} ready", env!("CARGO_PKG_VERSION")),
+            format!(
+                "{STARTUP_BANNER_PREFIX}title|DAgent {} ready",
+                env!("CARGO_PKG_VERSION")
+            ),
         );
         self.push_entry(
             EntryKind::System,
             format!(
-                "agents: {} | primary: {}",
+                "{STARTUP_BANNER_PREFIX}agents|agents: {} | primary: {}",
                 providers_label(&self.available_providers),
                 self.primary_provider.as_str()
             ),
         );
-        self.push_entry(EntryKind::System, format!("cwd: {}", cwd));
         self.push_entry(
             EntryKind::System,
-            "keys: Enter send | Shift+Enter newline | Ctrl+K commands | Ctrl+R history",
+            format!("{STARTUP_BANNER_PREFIX}cwd|cwd: {}", cwd),
+        );
+        self.push_entry(
+            EntryKind::System,
+            format!(
+                "{STARTUP_BANNER_PREFIX}keys|keys: Enter send | Shift+Enter newline | Ctrl+R history"
+            ),
         );
         self.last_status = "ready".to_string();
     }
@@ -1058,9 +1228,12 @@ impl App {
         {
             self.primary_provider = snapshot.primary_provider;
         }
-        self.show_tool_events = snapshot.show_tool_events;
         self.theme = snapshot.theme;
-        self.entries = snapshot.entries;
+        if restore_transcript_on_start(self.memory.is_some()) {
+            self.entries = snapshot.entries;
+        } else {
+            self.entries = Vec::new();
+        }
         self.history = snapshot.history;
         self.session_id = if snapshot.session_id.trim().is_empty() {
             default_session_id()
@@ -1098,7 +1271,6 @@ impl App {
         };
         let snapshot = SessionSnapshot {
             primary_provider: self.primary_provider,
-            show_tool_events: self.show_tool_events,
             theme: self.theme,
             entries,
             history,
@@ -1169,6 +1341,7 @@ impl App {
                         self.agent_verb_idx.insert(provider, seed % 12);
                         self.agent_started_at.insert(provider, Instant::now());
                         let event_msg = format!("agent {} started", provider.as_str());
+                        self.agent_tool_event.insert(provider, event_msg.clone());
                         self.last_tool_event = event_msg;
                         self.last_status = format!("{} working", provider.as_str());
                     }
@@ -1266,6 +1439,7 @@ impl App {
                             elapsed_secs / 60,
                             elapsed_secs % 60
                         );
+                        self.agent_tool_event.insert(provider, event_msg.clone());
                         self.last_tool_event = event_msg;
                         self.last_status = format!("{} done", provider.as_str());
                     }
@@ -1334,8 +1508,15 @@ impl App {
                         if msg.trim().is_empty() {
                             continue;
                         }
+                        if let Some(ap) = self.active_provider {
+                            self.agent_tool_event.insert(ap, msg.clone());
+                        }
                         self.last_tool_event = msg.clone();
                         self.last_status = format!("tool: {}", truncate(&msg, 48));
+                        // Push tool events to transcript so the user can see
+                        // what tools the agent is calling in real-time.
+                        self.push_entry(EntryKind::Tool, msg);
+                        render_changed = true;
                     }
                     Ok(WorkerEvent::PromotePrimary { to, reason }) => {
                         processed_any = true;
@@ -1430,7 +1611,10 @@ impl App {
         }
 
         if self.running {
-            self.push_entry(EntryKind::System, "task is running, wait...");
+            let msg = "task is running, wait...";
+            if !self.last_system_entry_is(msg) {
+                self.push_entry(EntryKind::System, msg);
+            }
             return;
         }
 
@@ -1476,16 +1660,8 @@ impl App {
             return;
         }
 
-        if line == "/events on" {
-            self.show_tool_events = true;
-            self.push_entry(EntryKind::System, "tool events: on");
-            self.clear_input_buffer();
-            return;
-        }
-
-        if line == "/events off" {
-            self.show_tool_events = false;
-            self.push_entry(EntryKind::System, "tool events: off");
+        if let Some(rest) = line.strip_prefix("/mem") {
+            self.handle_memory_command(rest.trim());
             self.clear_input_buffer();
             return;
         }
@@ -1714,16 +1890,188 @@ impl App {
         );
     }
 
-    fn filtered_commands(&self) -> Vec<String> {
-        let q = self.palette_query.to_lowercase();
-        if q.trim().is_empty() {
-            return self.commands.clone();
+    fn handle_memory_command(&mut self, args: &str) {
+        let usage = [
+            "memory commands",
+            "  /mem                     show summary",
+            "  /mem show [n]            show latest n records (default 20)",
+            "  /mem find <query>        search memory in this session",
+            "  /mem prune [keep]        keep latest N records (default 200)",
+            "  /mem clear               clear memory only (keep transcript)",
+        ]
+        .join("\n");
+
+        let Some(memory) = self.memory.as_ref() else {
+            self.push_entry(EntryKind::Error, "memory backend unavailable");
+            self.last_status = "memory unavailable".to_string();
+            return;
+        };
+
+        let mut parts = args.split_whitespace();
+        let sub = parts.next().unwrap_or("");
+
+        if sub.is_empty() || sub == "help" {
+            match memory.session_message_count(&self.session_id) {
+                Ok(count) => {
+                    self.push_entry(
+                        EntryKind::System,
+                        format!("session memory: {} records\n{}", count, usage),
+                    );
+                    self.last_status = format!("memory {} records", count);
+                }
+                Err(err) => {
+                    self.push_entry(
+                        EntryKind::Error,
+                        format!("memory read failed: {}", truncate(&err.to_string(), 80)),
+                    );
+                    self.last_status = "memory error".to_string();
+                }
+            }
+            return;
         }
-        self.commands
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
+
+        match sub {
+            "show" => {
+                let limit = match parts.next() {
+                    Some(raw) => match raw.parse::<usize>() {
+                        Ok(v) if v > 0 => v.min(MEM_SHOW_MAX_LIMIT),
+                        _ => {
+                            self.push_entry(
+                                EntryKind::Error,
+                                "usage: /mem show [positive-number]",
+                            );
+                            self.last_status = "memory usage".to_string();
+                            return;
+                        }
+                    },
+                    None => MEM_SHOW_DEFAULT_LIMIT,
+                };
+                if parts.next().is_some() {
+                    self.push_entry(EntryKind::Error, "usage: /mem show [n]");
+                    self.last_status = "memory usage".to_string();
+                    return;
+                }
+
+                match memory.list_session_lines(&self.session_id, limit) {
+                    Ok(lines) => {
+                        if lines.is_empty() {
+                            self.push_entry(EntryKind::System, "memory is empty");
+                            self.last_status = "memory empty".to_string();
+                        } else {
+                            self.push_entry(
+                                EntryKind::System,
+                                format!("memory (latest {}):\n{}", lines.len(), lines.join("\n")),
+                            );
+                            self.last_status = format!("memory show {}", lines.len());
+                        }
+                    }
+                    Err(err) => {
+                        self.push_entry(
+                            EntryKind::Error,
+                            format!("memory read failed: {}", truncate(&err.to_string(), 80)),
+                        );
+                        self.last_status = "memory error".to_string();
+                    }
+                }
+            }
+            "find" => {
+                let query = args
+                    .strip_prefix("find")
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if query.is_empty() {
+                    self.push_entry(EntryKind::Error, "usage: /mem find <query>");
+                    self.last_status = "memory usage".to_string();
+                    return;
+                }
+
+                match memory.search_session_lines(&self.session_id, query, MEM_FIND_DEFAULT_LIMIT) {
+                    Ok(lines) => {
+                        if lines.is_empty() {
+                            self.push_entry(EntryKind::System, "memory search: no match");
+                            self.last_status = "memory no match".to_string();
+                        } else {
+                            self.push_entry(
+                                EntryKind::System,
+                                format!(
+                                    "memory search results ({}):\n{}",
+                                    lines.len(),
+                                    lines.join("\n")
+                                ),
+                            );
+                            self.last_status = format!("memory match {}", lines.len());
+                        }
+                    }
+                    Err(err) => {
+                        self.push_entry(
+                            EntryKind::Error,
+                            format!("memory search failed: {}", truncate(&err.to_string(), 80)),
+                        );
+                        self.last_status = "memory error".to_string();
+                    }
+                }
+            }
+            "prune" | "trim" => {
+                let keep = match parts.next() {
+                    Some(raw) => match raw.parse::<usize>() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            self.push_entry(
+                                EntryKind::Error,
+                                "usage: /mem prune [non-negative-number]",
+                            );
+                            self.last_status = "memory usage".to_string();
+                            return;
+                        }
+                    },
+                    None => MEM_PRUNE_DEFAULT_KEEP,
+                };
+                if parts.next().is_some() {
+                    self.push_entry(EntryKind::Error, "usage: /mem prune [keep]");
+                    self.last_status = "memory usage".to_string();
+                    return;
+                }
+
+                let prune_result = memory.prune_session_keep_recent(&self.session_id, keep);
+                let count_result = memory.session_message_count(&self.session_id);
+                match (prune_result, count_result) {
+                    (Ok(removed), Ok(remaining)) => {
+                        self.push_entry(
+                            EntryKind::System,
+                            format!(
+                                "memory pruned: removed {}, remaining {}",
+                                removed, remaining
+                            ),
+                        );
+                        self.last_status = format!("memory pruned {}", removed);
+                    }
+                    (Err(err), _) | (_, Err(err)) => {
+                        self.push_entry(
+                            EntryKind::Error,
+                            format!("memory prune failed: {}", truncate(&err.to_string(), 80)),
+                        );
+                        self.last_status = "memory error".to_string();
+                    }
+                }
+            }
+            "clear" => match memory.clear_session(&self.session_id) {
+                Ok(()) => {
+                    self.push_entry(EntryKind::System, "memory cleared for current session");
+                    self.last_status = "memory cleared".to_string();
+                }
+                Err(err) => {
+                    self.push_entry(
+                        EntryKind::Error,
+                        format!("memory clear failed: {}", truncate(&err.to_string(), 80)),
+                    );
+                    self.last_status = "memory error".to_string();
+                }
+            },
+            _ => {
+                self.push_entry(EntryKind::Error, "usage: /mem [show|find|prune|clear]");
+                self.last_status = "memory usage".to_string();
+            }
+        }
     }
 
     fn filtered_history(&self) -> Vec<String> {
@@ -2035,7 +2383,6 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         match self.mode {
             Mode::Approval => self.handle_approval_key(key),
-            Mode::CommandPalette => self.handle_palette_key(key),
             Mode::HistorySearch => self.handle_history_key(key),
             Mode::Normal => self.handle_normal_key(key),
         }
@@ -2068,40 +2415,6 @@ impl App {
             }
         } else {
             self.mode = Mode::Normal;
-        }
-    }
-
-    fn handle_palette_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Up => {
-                if self.palette_idx > 0 {
-                    self.palette_idx -= 1;
-                }
-            }
-            KeyCode::Down => {
-                let len = self.filtered_commands().len();
-                if len > 0 && self.palette_idx + 1 < len {
-                    self.palette_idx += 1;
-                }
-            }
-            KeyCode::Enter => {
-                let items = self.filtered_commands();
-                if let Some(selected) = items.get(self.palette_idx) {
-                    self.input = selected.clone();
-                    self.cursor = self.input.len();
-                }
-                self.mode = Mode::Normal;
-            }
-            KeyCode::Backspace => {
-                self.palette_query.pop();
-                self.palette_idx = 0;
-            }
-            KeyCode::Char(c) => {
-                self.palette_query.push(c);
-                self.palette_idx = 0;
-            }
-            _ => {}
         }
     }
 
@@ -2163,24 +2476,13 @@ impl App {
                     return;
                 }
                 KeyCode::Char('k') => {
-                    self.mode = Mode::CommandPalette;
-                    self.palette_query.clear();
-                    self.palette_idx = 0;
+                    // Ctrl+K command palette removed; keep as no-op.
                     return;
                 }
                 KeyCode::Char('r') => {
                     self.mode = Mode::HistorySearch;
                     self.history_query.clear();
                     self.history_idx = 0;
-                    return;
-                }
-                KeyCode::Char('t') => {
-                    self.show_tool_events = !self.show_tool_events;
-                    self.last_status = if self.show_tool_events {
-                        "tool events on".to_string()
-                    } else {
-                        "tool events off".to_string()
-                    };
                     return;
                 }
                 KeyCode::Char('j') => {
@@ -2306,17 +2608,14 @@ impl App {
     }
 
     fn render_entries_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render_entries_lines_range(width, 0, self.entries.len())
+    }
+
+    fn render_entries_lines_range(&self, width: u16, start: usize, end: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::<Line>::new();
         let palette = self.theme.palette();
 
-        for (idx, entry) in self.entries.iter().enumerate() {
-            if !self.show_tool_events && matches!(entry.kind, EntryKind::Tool) {
-                // Keep Codex progress visible even when generic tool events are hidden.
-                if !entry.text.starts_with("codex ") {
-                    continue;
-                }
-            }
-
+        for (idx, entry) in self.entries[start..end].iter().enumerate().map(|(i, e)| (i + start, e)) {
             let entry_provider =
                 extract_agent_name(&entry.text).and_then(|n| provider_from_name(&n));
             let is_current_entry =
@@ -2363,12 +2662,6 @@ impl App {
                             .fg(provider_color)
                             .add_modifier(Modifier::BOLD)
                     };
-                    // Keep assistant header text stable across running->done transitions.
-                    // If header text changes (for example appending elapsed time on done),
-                    // scrollback append logic has to replay from this line and can look like
-                    // the whole answer got duplicated.
-                    lines.push(Line::from(vec![Span::styled(label, label_style)]));
-
                     let cleaned_text = cleaned_assistant_text(entry);
                     let raw_text = if cleaned_text.trim().is_empty() {
                         String::new()
@@ -2376,23 +2669,135 @@ impl App {
                         cleaned_text
                     };
                     let base_style = if is_processing {
-                        Style::default().fg(palette.assistant_processing_text)
+                        palette.body_processing_style()
                     } else {
-                        Style::default().fg(palette.assistant_text)
+                        palette.body_style()
                     };
-                    if !raw_text.is_empty() {
+
+                    // Label column: agent name occupies a fixed-width column.
+                    // Continuation and wrapped lines are indented to keep content
+                    // aligned and prevent text from invading the label column.
+                    let label_col_width = UnicodeWidthStr::width(label.as_str()) + 2; // "label" + " │"
+                    let label_sep = format!("{} \u{2502}", label); // "claude │" or "codex  │"
+                    let indent = " ".repeat(label_col_width.saturating_sub(1));
+                    let indent_sep = format!("{}\u{2502}", indent); // "       │"
+                    let content_width = (width as usize).saturating_sub(label_col_width + 1); // +1 for space after │
+
+                    if raw_text.is_empty() {
+                        // No content yet (e.g. still thinking).
+                        lines.push(Line::from(vec![
+                            Span::styled(label_sep.clone(), label_style),
+                        ]));
+                    } else {
                         let md_lines = render_markdown(&raw_text, base_style, palette);
-                        for md_line in md_lines {
-                            let mut spans = vec![Span::raw("  ")];
-                            spans.extend(md_line);
-                            lines.push(Line::from(spans));
+                        for (i, md_line) in md_lines.into_iter().enumerate() {
+                            // Pre-wrap: split content spans into multiple lines
+                            // so each fits within content_width.
+                            let wrapped = wrap_spans(md_line, content_width);
+                            for (wi, w_line) in wrapped.into_iter().enumerate() {
+                                let mut spans = if i == 0 && wi == 0 {
+                                    // First line: label column + separator + content
+                                    vec![
+                                        Span::styled(label_sep.clone(), label_style),
+                                        Span::raw(" "),
+                                    ]
+                                } else {
+                                    // Continuation: indent + separator + content
+                                    // Use the same label color for the │ so it
+                                    // stays visually aligned with the agent.
+                                    vec![
+                                        Span::styled(indent_sep.clone(), label_style),
+                                        Span::raw(" "),
+                                    ]
+                                };
+                                spans.extend(w_line);
+                                lines.push(Line::from(spans));
+                            }
                         }
                     }
                 }
                 EntryKind::System => {
+                    if let Some(row) = parse_startup_banner_row(&entry.text) {
+                        let prev_is_banner = idx > 0
+                            && self
+                                .entries
+                                .get(idx - 1)
+                                .is_some_and(is_startup_banner_entry);
+                        let next_is_banner = self
+                            .entries
+                            .get(idx + 1)
+                            .is_some_and(is_startup_banner_entry);
+
+                        let border_style = palette.panel_border_style();
+                        let outer = banner_card_outer_width(width);
+                        if outer >= 6 {
+                            let inner = outer.saturating_sub(2);
+                            let content_width = inner.saturating_sub(2);
+                            if !prev_is_banner {
+                                lines.push(Line::from(vec![
+                                    Span::styled("┌".to_string(), border_style),
+                                    Span::styled("─".repeat(inner), border_style),
+                                    Span::styled("┐".to_string(), border_style),
+                                ]));
+                            }
+
+                            let (raw_text, content_style) = match row {
+                                StartupBannerRow::Title(value) => (
+                                    format!(" {value}"),
+                                    palette.title_style(),
+                                ),
+                                StartupBannerRow::Agents(value) => {
+                                    (format!(" {value}"), palette.secondary_style())
+                                }
+                                StartupBannerRow::Cwd(value) => {
+                                    (format!(" {value}"), palette.secondary_style())
+                                }
+                                StartupBannerRow::Keys(value) => {
+                                    (format!(" {value}"), palette.muted_style())
+                                }
+                            };
+                            let content = fit_to_display_width(&raw_text, content_width);
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ".to_string(), border_style),
+                                Span::styled(content, content_style),
+                                Span::styled(" │".to_string(), border_style),
+                            ]));
+
+                            if !next_is_banner {
+                                lines.push(Line::from(vec![
+                                    Span::styled("└".to_string(), border_style),
+                                    Span::styled("─".repeat(inner), border_style),
+                                    Span::styled("┘".to_string(), border_style),
+                                ]));
+                                lines.push(Line::from(""));
+                            }
+                            continue;
+                        }
+
+                        let (text, style) = match row {
+                            StartupBannerRow::Title(value) => (
+                                value.to_string(),
+                                palette.title_style(),
+                            ),
+                            StartupBannerRow::Agents(value) => {
+                                (value.to_string(), palette.secondary_style())
+                            }
+                            StartupBannerRow::Cwd(value) => {
+                                (value.to_string(), palette.secondary_style())
+                            }
+                            StartupBannerRow::Keys(value) => {
+                                (value.to_string(), palette.muted_style())
+                            }
+                        };
+                        lines.push(Line::from(vec![Span::styled(text, style)]));
+                        if !next_is_banner {
+                            lines.push(Line::from(""));
+                        }
+                        continue;
+                    }
                     lines.push(Line::from(vec![Span::styled(
                         format!("[sys] {}", entry.text),
-                        Style::default().fg(palette.system_text),
+                        palette.secondary_style(),
                     )]));
                 }
                 EntryKind::Tool => {
@@ -2454,6 +2859,80 @@ impl App {
     }
 }
 
+/// Pre-wrap a list of spans so that each resulting line fits within `max_width`
+/// display columns. Returns a Vec of span-lines; if no wrapping is needed,
+/// returns a single-element vec with the original spans.
+fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if max_width == 0 {
+        return vec![spans];
+    }
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current_line: Vec<Span<'static>> = Vec::new();
+    let mut current_width: usize = 0;
+
+    for span in spans {
+        let span_width = UnicodeWidthStr::width(span.content.as_ref());
+        if current_width + span_width <= max_width {
+            current_width += span_width;
+            current_line.push(span);
+        } else {
+            // Need to split this span across lines.
+            let style = span.style;
+            let text = span.content.into_owned();
+            let mut remaining = text.as_str();
+            while !remaining.is_empty() {
+                let avail = max_width.saturating_sub(current_width);
+                if avail == 0 {
+                    if !current_line.is_empty() {
+                        result.push(std::mem::take(&mut current_line));
+                    }
+                    current_width = 0;
+                    continue;
+                }
+                // Find the split point: fit as many chars as possible within avail columns.
+                let mut split_byte = 0;
+                let mut cols = 0usize;
+                for (byte_idx, ch) in remaining.char_indices() {
+                    let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if cols + w > avail {
+                        break;
+                    }
+                    cols += w;
+                    split_byte = byte_idx + ch.len_utf8();
+                }
+                if split_byte == 0 && current_line.is_empty() {
+                    // Single char wider than avail (shouldn't happen normally).
+                    // Force at least one char to avoid infinite loop.
+                    let ch = remaining.chars().next().unwrap();
+                    split_byte = ch.len_utf8();
+                    cols = UnicodeWidthChar::width(ch).unwrap_or(1);
+                }
+                if split_byte == 0 {
+                    // No room on current line; start a new one.
+                    result.push(std::mem::take(&mut current_line));
+                    current_width = 0;
+                    continue;
+                }
+                let chunk = &remaining[..split_byte];
+                current_line.push(Span::styled(chunk.to_string(), style));
+                current_width += cols;
+                remaining = &remaining[split_byte..];
+                if !remaining.is_empty() {
+                    result.push(std::mem::take(&mut current_line));
+                    current_width = 0;
+                }
+            }
+        }
+    }
+    if !current_line.is_empty() {
+        result.push(current_line);
+    }
+    if result.is_empty() {
+        result.push(Vec::new());
+    }
+    result
+}
+
 /// Render markdown text into styled spans per line.
 /// Supports: headings (#), bold (**), italic (*), inline code (`),
 /// fenced code blocks (```), and unordered list bullets (- / *).
@@ -2476,9 +2955,9 @@ fn render_markdown(
     let mut in_code_block = false;
 
     let code_block_style = Style::default().fg(palette.code_fg).bg(palette.code_bg);
-    let heading_style = base_style
+    let heading_style = Style::default()
         .fg(palette.banner_title)
-        .add_modifier(Modifier::BOLD);
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let bold_style = base_style.add_modifier(Modifier::BOLD);
     let italic_style = base_style.add_modifier(Modifier::ITALIC);
     let inline_code_style = Style::default()
@@ -2497,16 +2976,14 @@ fn render_markdown(
             if lang.is_empty() {
                 result.push(vec![Span::styled(
                     "───".to_string(),
-                    Style::default().fg(palette.muted_text),
+                    palette.muted_style(),
                 )]);
             } else {
                 result.push(vec![
-                    Span::styled("─── ".to_string(), Style::default().fg(palette.muted_text)),
+                    Span::styled("─── ".to_string(), palette.muted_style()),
                     Span::styled(
                         lang.to_string(),
-                        Style::default()
-                            .fg(palette.muted_text)
-                            .add_modifier(Modifier::ITALIC),
+                        palette.muted_style().add_modifier(Modifier::ITALIC),
                     ),
                 ]);
             }
@@ -2530,7 +3007,7 @@ fn render_markdown(
                 result.push(vec![
                     Span::styled(
                         format!("{} ", prefix),
-                        Style::default().fg(palette.muted_text),
+                        palette.muted_style(),
                     ),
                     Span::styled(heading_text.to_string(), heading_style),
                 ]);
@@ -2899,7 +3376,7 @@ mod tests {
         let done_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
 
         assert_eq!(running_header, done_header);
-        assert_eq!(done_header, "codex");
+        assert_eq!(done_header, "codex \u{2502} answer");
     }
 
     #[test]
@@ -2921,6 +3398,24 @@ mod tests {
         let after = app.scroll_max();
         assert!(after >= before);
         assert_eq!(app.scroll, after);
+    }
+
+    #[test]
+    fn startup_banner_renders_as_card() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.maybe_show_startup_banner();
+
+        let rendered = app
+            .render_entries_lines(80)
+            .into_iter()
+            .map(|line| flatten_line_to_plain(&line))
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.starts_with('┌')));
+        assert!(rendered.iter().any(|line| line.starts_with("│ ")));
+        assert!(rendered.iter().any(|line| line.starts_with('└')));
+        assert!(!rendered.iter().any(|line| line.contains("[sys]")));
     }
 
     #[test]
@@ -2997,7 +3492,8 @@ mod tests {
     }
 
     #[test]
-    fn compute_append_ranges_appends_from_first_difference() {
+    fn compute_append_ranges_rejects_in_place_changes() {
+        // When existing lines changed (not just appended), no safe append is possible.
         let old = vec![
             "user".to_string(),
             "assistant (thinking...)".to_string(),
@@ -3011,7 +3507,26 @@ mod tests {
             "tool progress".to_string(),
             "tool done".to_string(),
         ];
-        assert_eq!(compute_append_ranges(&old, &new), vec![(1, 5)]);
+        assert_eq!(
+            compute_append_ranges(&old, &new),
+            Vec::<(usize, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn compute_append_ranges_appends_tail_only() {
+        // When old is a strict prefix of new, append the tail.
+        let old = vec![
+            "user".to_string(),
+            "assistant".to_string(),
+        ];
+        let new = vec![
+            "user".to_string(),
+            "assistant".to_string(),
+            "tool start".to_string(),
+            "tool done".to_string(),
+        ];
+        assert_eq!(compute_append_ranges(&old, &new), vec![(2, 4)]);
     }
 
     #[test]
@@ -3034,5 +3549,44 @@ mod tests {
         app.handle_paste_event("hello\nworld");
         assert_eq!(app.input, "hello\nworld");
         assert!(app.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn mem_command_reports_backend_unavailable_in_tests() {
+        let mut app = App::new();
+        app.input = "/mem show".to_string();
+        app.cursor = app.input.len();
+
+        app.submit_current_line(false);
+
+        let last = app.entries.last().expect("expected memory error entry");
+        assert!(matches!(last.kind, EntryKind::Error));
+        assert!(last.text.contains("memory backend unavailable"));
+    }
+
+    #[test]
+    fn running_submit_hint_is_not_duplicated() {
+        let mut app = App::new();
+        app.running = true;
+        app.input = "hello".to_string();
+        app.cursor = app.input.len();
+
+        app.submit_current_line(false);
+        app.submit_current_line(false);
+
+        let wait_count = app
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(entry.kind, EntryKind::System) && entry.text == "task is running, wait..."
+            })
+            .count();
+        assert_eq!(wait_count, 1);
+    }
+
+    #[test]
+    fn transcript_restore_defaults_to_hidden_when_memory_is_available() {
+        assert!(!restore_transcript_on_start(true));
+        assert!(restore_transcript_on_start(false));
     }
 }

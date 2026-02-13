@@ -161,9 +161,9 @@ fn execute_slash_command(
         "/tool" => run_tool(parts, tx),
         "/provider" => Ok("provider alias enabled; use /primary".to_string()),
         "/primary" => Ok("primary change handled in UI".to_string()),
-        "/events" => Ok("events toggle handled in UI".to_string()),
         "/theme" => Ok("theme change handled in UI".to_string()),
         "/clear" => Ok("clear handled in UI".to_string()),
+        "/mem" => Ok("memory command handled in UI".to_string()),
         _ => Err("unknown command. use /help".to_string()),
     }
 }
@@ -224,8 +224,8 @@ fn help_text() -> String {
         "  /provider [claude|codex]",
         "",
         "visibility",
-        "  /events [on|off]",
         "  /theme [fjord|graphite|solarized|aurora|ember]",
+        "  /mem [show|find|prune|clear]",
         "",
         "tools",
         "  /tool <echo|time|bash> [input]",
@@ -238,7 +238,30 @@ fn help_text() -> String {
         "",
         "keys",
         "  Enter send | Shift+Enter newline | PgUp/PgDn scroll",
-        "  Ctrl+K command palette | Ctrl+R history search",
+        "  Ctrl+R history search",
     ]
     .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    #[test]
+    fn commands_output_does_not_include_events_entries() {
+        let (tx, _rx) = unbounded();
+        let output = execute_slash_command("/commands", &tx).expect("commands output");
+
+        assert!(!output.contains("/events on"));
+        assert!(!output.contains("/events off"));
+        assert!(output.contains("/mem"));
+    }
+
+    #[test]
+    fn help_text_does_not_include_events_toggle() {
+        let text = help_text();
+        assert!(!text.contains("/events"));
+        assert!(text.contains("/mem [show|find|prune|clear]"));
+    }
 }
