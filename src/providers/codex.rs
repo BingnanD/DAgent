@@ -230,11 +230,7 @@ fn extract_progress(line: &str, prefer_zh: bool) -> Option<String> {
                         })
                     }
                 }
-                "reasoning" => Some(if prefer_zh {
-                    "codex 思考中...".to_string()
-                } else {
-                    "codex thinking...".to_string()
-                }),
+                "reasoning" => None,
                 _ => Some(if prefer_zh {
                     format!("codex 正在处理: {}", humanize_item_type(item_type))
                 } else {
@@ -254,11 +250,7 @@ fn extract_progress(line: &str, prefer_zh: bool) -> Option<String> {
                         .map(|s| preview(s, 110))
                         .unwrap_or_default();
                     if thought.is_empty() {
-                        Some(if prefer_zh {
-                            "codex 思考中...".to_string()
-                        } else {
-                            "codex thinking...".to_string()
-                        })
+                        None
                     } else {
                         Some(if prefer_zh {
                             format!("codex 思路: {}", thought)

@@ -11,6 +11,7 @@ use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
+use crossterm::terminal::{Clear as TermClear, ClearType};
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -22,9 +23,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     cleaned_assistant_text, default_commands, detect_available_providers, execute_line,
     extract_agent_name, high_risk_check, input_cursor_position, kill_pid, memory::MemoryStore,
-    ordered_providers, provider_from_name, providers_label, truncate, DispatchTarget, SPINNER,
+    ordered_providers, provider_from_name, providers_label, truncate, DispatchTarget,
     THINKING_PLACEHOLDER,
 };
+
+const COLLAPSED_PASTE_CHAR_THRESHOLD: usize = 800;
+const COLLAPSED_PASTE_LINE_THRESHOLD: usize = 12;
 
 #[path = "ui.rs"]
 pub(crate) mod ui;
@@ -102,7 +106,7 @@ impl ThemePreset {
                 status_text: Color::Rgb(76, 86, 106),
                 user_fg: Color::Rgb(236, 239, 244),
                 user_bg: Color::Rgb(36, 40, 52),
-                claude_label: Color::Rgb(147, 130, 220),
+                claude_label: Color::Rgb(255, 102, 51),
                 codex_label: Color::Rgb(86, 182, 194),
                 processing_label: Color::Rgb(136, 192, 208),
                 assistant_text: Color::Rgb(229, 233, 240),
@@ -135,7 +139,7 @@ impl ThemePreset {
                 status_text: Color::Rgb(117, 126, 138),
                 user_fg: Color::Rgb(239, 242, 245),
                 user_bg: Color::Rgb(36, 42, 48),
-                claude_label: Color::Rgb(194, 160, 245),
+                claude_label: Color::Rgb(255, 102, 51),
                 codex_label: Color::Rgb(92, 198, 208),
                 processing_label: Color::Rgb(122, 214, 197),
                 assistant_text: Color::Rgb(229, 232, 235),
@@ -168,7 +172,7 @@ impl ThemePreset {
                 status_text: Color::Rgb(88, 110, 117),
                 user_fg: Color::Rgb(253, 246, 227),
                 user_bg: Color::Rgb(7, 54, 66),
-                claude_label: Color::Rgb(181, 137, 0),
+                claude_label: Color::Rgb(255, 102, 51),
                 codex_label: Color::Rgb(42, 161, 152),
                 processing_label: Color::Rgb(88, 224, 206),
                 assistant_text: Color::Rgb(238, 232, 213),
@@ -201,7 +205,7 @@ impl ThemePreset {
                 status_text: Color::Rgb(102, 121, 118),
                 user_fg: Color::Rgb(242, 248, 245),
                 user_bg: Color::Rgb(27, 36, 39),
-                claude_label: Color::Rgb(190, 154, 233),
+                claude_label: Color::Rgb(255, 102, 51),
                 codex_label: Color::Rgb(99, 213, 180),
                 processing_label: Color::Rgb(141, 211, 199),
                 assistant_text: Color::Rgb(225, 234, 231),
@@ -234,7 +238,7 @@ impl ThemePreset {
                 status_text: Color::Rgb(140, 120, 106),
                 user_fg: Color::Rgb(255, 244, 232),
                 user_bg: Color::Rgb(47, 38, 34),
-                claude_label: Color::Rgb(196, 153, 235),
+                claude_label: Color::Rgb(255, 102, 51),
                 codex_label: Color::Rgb(110, 185, 193),
                 processing_label: Color::Rgb(237, 165, 120),
                 assistant_text: Color::Rgb(242, 232, 220),
@@ -270,7 +274,9 @@ pub(crate) struct ThemePalette {
     pub(crate) muted_text: Color,
     pub(crate) highlight_fg: Color,
     pub(crate) highlight_bg: Color,
+    #[allow(dead_code)]
     pub(crate) activity_badge_fg: Color,
+    #[allow(dead_code)]
     pub(crate) activity_badge_bg: Color,
     pub(crate) activity_text: Color,
     pub(crate) status_text: Color,
@@ -310,6 +316,8 @@ pub(crate) enum EntryKind {
 pub(crate) struct LogEntry {
     pub(crate) kind: EntryKind,
     pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) elapsed_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -317,6 +325,12 @@ struct PendingApproval {
     line: String,
     tool: String,
     reason: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingPaste {
+    marker: String,
+    content: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -384,7 +398,7 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
     let mut app = App::new();
     const ACTIVE_POLL_MS: u64 = 33;
     const IDLE_POLL_MS: u64 = 100;
-    const SPINNER_TICK_MS: u64 = 220;
+    const SPINNER_TICK_MS: u64 = 120;
     const RUNNING_DRAW_INTERVAL_MS: u64 = 33;
     const MAX_EVENTS_PER_FRAME: u16 = 64;
     let mut last_spinner_tick = Instant::now();
@@ -399,12 +413,27 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
         if app.poll_worker() {
             state_changed = true;
         }
-        if app.running && last_spinner_tick.elapsed() >= Duration::from_millis(SPINNER_TICK_MS) {
-            app.spinner_idx = (app.spinner_idx + 1) % SPINNER.len();
+        if app.running
+            && last_spinner_tick.elapsed() >= Duration::from_millis(SPINNER_TICK_MS)
+        {
+            app.spinner_idx = (app.spinner_idx + 1) % 8;
             last_spinner_tick = Instant::now();
             state_changed = true;
         }
         if state_changed {
+            needs_draw = true;
+        }
+
+        if app.needs_screen_clear {
+            app.needs_screen_clear = false;
+            flushed_log_lines.clear();
+            // Clear the entire terminal including scrollback, not just the ratatui viewport.
+            crossterm::execute!(
+                std::io::stdout(),
+                TermClear(ClearType::Purge),
+                crossterm::cursor::MoveTo(0, 0)
+            )?;
+            terminal.clear()?;
             needs_draw = true;
         }
 
@@ -456,7 +485,7 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
                     _ => {}
                 },
                 Event::Paste(text) => {
-                    app.insert_str(&text);
+                    app.handle_paste_event(&text);
                     input_changed = true;
                 }
                 Event::Resize(_, _) => {
@@ -542,8 +571,8 @@ fn flush_new_log_lines(
             res.context("insert transcript lines")?;
         }
         Err(_) => {
-            // Fallback: skip append for this batch instead of crashing the whole app.
-            *flushed_log_lines = lines.to_vec();
+            // Fallback: force a replay on next frame instead of silently dropping updates.
+            flushed_log_lines.clear();
             return Ok(());
         }
     }
@@ -579,37 +608,11 @@ fn compute_append_ranges(
     if common_prefix == current_plain.len() && common_prefix == flushed_plain.len() {
         return Vec::new();
     }
-
-    // Try to preserve the largest unchanged tail from already-flushed text, even if
-    // new lines were appended after it. This prevents replaying old tool/progress lines
-    // when an earlier assistant line is edited and a completion line is appended.
-    let mut best_tail_len = 0usize;
-    let mut best_tail_pos = 0usize;
-    let max_tail = flushed_plain.len().saturating_sub(common_prefix);
-    'outer: for tail_len in (1..=max_tail).rev() {
-        let old_tail_start = flushed_plain.len() - tail_len;
-        for new_pos in common_prefix..=current_plain.len().saturating_sub(tail_len) {
-            if current_plain[new_pos..new_pos + tail_len] == flushed_plain[old_tail_start..] {
-                best_tail_len = tail_len;
-                best_tail_pos = new_pos;
-                break 'outer;
-            }
-        }
+    if common_prefix < current_plain.len() {
+        vec![(common_prefix, current_plain.len())]
+    } else {
+        Vec::new()
     }
-
-    let mut ranges = Vec::new();
-    if best_tail_len > 0 {
-        if common_prefix < best_tail_pos {
-            ranges.push((common_prefix, best_tail_pos));
-        }
-        let tail_end = best_tail_pos + best_tail_len;
-        if tail_end < current_plain.len() {
-            ranges.push((tail_end, current_plain.len()));
-        }
-    } else if common_prefix < current_plain.len() {
-        ranges.push((common_prefix, current_plain.len()));
-    }
-    ranges
 }
 
 struct App {
@@ -622,6 +625,7 @@ struct App {
 
     input: String,
     cursor: usize,
+    pending_pastes: Vec<PendingPaste>,
     entries: Vec<LogEntry>,
     scroll: u16,
     autoscroll: bool,
@@ -652,11 +656,18 @@ struct App {
     run_started_at: Option<Instant>,
     run_target: String,
     last_tool_event: String,
+    finished_at: Option<Instant>,
+    agent_chars: HashMap<Provider, usize>,
+    agent_verb_idx: HashMap<Provider, usize>,
+    agent_started_at: HashMap<Provider, Instant>,
 
     last_status: String,
     session_id: String,
     memory: Option<MemoryStore>,
     child_pids: Arc<Mutex<Vec<u32>>>,
+
+    /// Set by /clear to tell the main loop to wipe the terminal scrollback.
+    needs_screen_clear: bool,
 
     /// Monotonically increasing counter bumped whenever entries change.
     render_generation: u64,
@@ -686,6 +697,7 @@ impl App {
             mode: Mode::Normal,
             input: String::new(),
             cursor: 0,
+            pending_pastes: Vec::new(),
             entries: Vec::new(),
             scroll: 0,
             autoscroll: true,
@@ -712,14 +724,20 @@ impl App {
             run_started_at: None,
             run_target: String::new(),
             last_tool_event: String::new(),
+            finished_at: None,
+            agent_chars: HashMap::new(),
+            agent_verb_idx: HashMap::new(),
+            agent_started_at: HashMap::new(),
             last_status: "ready".to_string(),
             session_id: default_session_id(),
             memory,
             child_pids: Arc::new(Mutex::new(Vec::new())),
+            needs_screen_clear: false,
             render_generation: 0,
             render_cache: RenderCache::new(),
         };
         app.restore_session();
+        app.maybe_show_startup_banner();
         app
     }
 
@@ -741,6 +759,9 @@ impl App {
         self.stream_had_chunk = false;
         self.agent_entries.clear();
         self.agent_had_chunk.clear();
+        self.agent_chars.clear();
+        self.agent_verb_idx.clear();
+        self.agent_started_at.clear();
         self.active_provider = None;
         self.run_started_at = None;
         self.run_target.clear();
@@ -749,6 +770,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn theme_name(&self) -> &'static str {
         self.theme.as_str()
     }
@@ -767,6 +789,7 @@ impl App {
         self.entries.push(LogEntry {
             kind,
             text: text.into(),
+            elapsed_secs: None,
         });
         self.follow_scroll();
     }
@@ -862,6 +885,85 @@ impl App {
         }
         let (_, end_y) = input_cursor_position(&self.input, self.input.len(), width, prompt_width);
         end_y.saturating_add(1).clamp(1, 6)
+    }
+
+    fn handle_paste_event(&mut self, raw: &str) {
+        let normalized = if raw.contains('\r') {
+            raw.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            raw.to_string()
+        };
+        if normalized.is_empty() {
+            return;
+        }
+
+        let char_count = normalized.chars().count();
+        let line_count = normalized.lines().count();
+        let should_collapse = char_count >= COLLAPSED_PASTE_CHAR_THRESHOLD
+            || line_count >= COLLAPSED_PASTE_LINE_THRESHOLD;
+
+        if should_collapse {
+            let marker = format!("[Pasted Content {} chars]", char_count);
+            self.pending_pastes.push(PendingPaste {
+                marker: marker.clone(),
+                content: normalized,
+            });
+            self.insert_str(&marker);
+            self.last_status = format!("pasted {} chars (collapsed)", char_count);
+        } else {
+            self.insert_str(&normalized);
+        }
+    }
+
+    fn consume_pending_pastes(&mut self, text: &str) -> String {
+        if self.pending_pastes.is_empty() {
+            return text.to_string();
+        }
+        let mut merged = text.to_string();
+        let mut search_from = 0usize;
+        for pending in self.pending_pastes.drain(..) {
+            if let Some(rel) = merged[search_from..].find(&pending.marker) {
+                let start = search_from + rel;
+                let end = start + pending.marker.len();
+                merged.replace_range(start..end, &pending.content);
+                search_from = start + pending.content.len();
+            }
+        }
+        merged
+    }
+
+    fn clear_input_buffer(&mut self) {
+        self.input.clear();
+        self.cursor = 0;
+        self.pending_pastes.clear();
+    }
+
+    fn maybe_show_startup_banner(&mut self) {
+        if !self.entries.is_empty() {
+            return;
+        }
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        self.push_entry(
+            EntryKind::System,
+            format!("DAgent {} ready", env!("CARGO_PKG_VERSION")),
+        );
+        self.push_entry(
+            EntryKind::System,
+            format!(
+                "agents: {} | primary: {}",
+                providers_label(&self.available_providers),
+                self.primary_provider.as_str()
+            ),
+        );
+        self.push_entry(EntryKind::System, format!("cwd: {}", cwd));
+        self.push_entry(
+            EntryKind::System,
+            "keys: Enter send | Shift+Enter newline | Ctrl+K commands | Ctrl+R history",
+        );
+        self.last_status = "ready".to_string();
     }
 
     fn build_contextual_prompt(&self, prompt: &str) -> String {
@@ -1059,10 +1161,14 @@ impl App {
                     Ok(WorkerEvent::AgentStart(provider)) => {
                         processed_any = true;
                         self.active_provider = Some(provider);
+                        self.agent_chars.insert(provider, 0);
+                        let seed = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos() as usize)
+                            .unwrap_or(self.spinner_idx);
+                        self.agent_verb_idx.insert(provider, seed % 12);
+                        self.agent_started_at.insert(provider, Instant::now());
                         let event_msg = format!("agent {} started", provider.as_str());
-                        if self.show_tool_events {
-                            self.push_entry(EntryKind::Tool, event_msg.clone());
-                        }
                         self.last_tool_event = event_msg;
                         self.last_status = format!("{} working", provider.as_str());
                     }
@@ -1072,6 +1178,7 @@ impl App {
                         if chunk.trim().is_empty() {
                             continue;
                         }
+                        *self.agent_chars.entry(provider).or_insert(0) += chunk.len();
                         if let Some(i) = self.agent_entries.get(&provider).copied() {
                             if let Some(entry) = self.entries.get_mut(i) {
                                 let had_chunk = self
@@ -1099,6 +1206,7 @@ impl App {
                     Ok(WorkerEvent::AgentDone(provider)) => {
                         processed_any = true;
                         render_changed = true;
+                        let elapsed_secs = self.running_elapsed_secs();
                         if let Some(i) = self.agent_entries.get(&provider).copied() {
                             let had_chunk = self
                                 .agent_had_chunk
@@ -1106,6 +1214,7 @@ impl App {
                                 .copied()
                                 .unwrap_or(false);
                             if let Some(entry) = self.entries.get_mut(i) {
+                                entry.elapsed_secs = Some(elapsed_secs);
                                 if !had_chunk {
                                     if entry.text.contains(THINKING_PLACEHOLDER) {
                                         entry.text = entry.text.replacen(
@@ -1151,27 +1260,27 @@ impl App {
                         if self.active_provider == Some(provider) {
                             self.active_provider = None;
                         }
-                        let elapsed_secs = self.running_elapsed_secs();
                         let event_msg = format!(
                             "agent {} completed ({:02}:{:02})",
                             provider.as_str(),
                             elapsed_secs / 60,
                             elapsed_secs % 60
                         );
-                        if self.show_tool_events {
-                            self.push_entry(EntryKind::Tool, event_msg.clone());
-                        }
                         self.last_tool_event = event_msg;
                         self.last_status = format!("{} done", provider.as_str());
                     }
                     Ok(WorkerEvent::Done(final_text)) => {
                         processed_any = true;
                         render_changed = true;
+                        let elapsed_secs = self.running_elapsed_secs();
                         if self.assistant_idx.is_some() {
                             if !self.stream_had_chunk {
                                 let final_text = final_text.trim();
                                 if let Some(i) = self.assistant_idx {
                                     if let Some(entry) = self.entries.get_mut(i) {
+                                        if entry.elapsed_secs.is_none() {
+                                            entry.elapsed_secs = Some(elapsed_secs);
+                                        }
                                         if final_text.is_empty() {
                                             if entry.text.trim().is_empty()
                                                 || entry.text.trim() == THINKING_PLACEHOLDER
@@ -1187,6 +1296,9 @@ impl App {
                                 }
                             } else if let Some(i) = self.assistant_idx {
                                 if let Some(entry) = self.entries.get_mut(i) {
+                                    if entry.elapsed_secs.is_none() {
+                                        entry.elapsed_secs = Some(elapsed_secs);
+                                    }
                                     if entry.text.trim().is_empty() {
                                         entry.text = "(no output)".to_string();
                                     }
@@ -1197,6 +1309,9 @@ impl App {
                                 self.agent_entries.get(&self.primary_provider).copied()
                             {
                                 if let Some(entry) = self.entries.get_mut(primary_idx) {
+                                    if entry.elapsed_secs.is_none() {
+                                        entry.elapsed_secs = Some(elapsed_secs);
+                                    }
                                     if entry.text.contains(THINKING_PLACEHOLDER) {
                                         entry.text =
                                             entry.text.replacen(THINKING_PLACEHOLDER, "", 1);
@@ -1206,6 +1321,7 @@ impl App {
                             }
                         }
                         self.clear_running_state();
+                        self.finished_at = None;
                         if self.last_tool_event.is_empty() {
                             self.last_tool_event = "run completed".to_string();
                         }
@@ -1220,10 +1336,6 @@ impl App {
                         }
                         self.last_tool_event = msg.clone();
                         self.last_status = format!("tool: {}", truncate(&msg, 48));
-                        let always_visible = msg.starts_with("codex ");
-                        if self.show_tool_events || always_visible {
-                            self.push_entry(EntryKind::Tool, msg);
-                        }
                     }
                     Ok(WorkerEvent::PromotePrimary { to, reason }) => {
                         processed_any = true;
@@ -1333,8 +1445,7 @@ impl App {
                 Ok(None) => {}
                 Err(err) => {
                     self.push_entry(EntryKind::Error, err);
-                    self.input.clear();
-                    self.cursor = 0;
+                    self.clear_input_buffer();
                     return;
                 }
             }
@@ -1351,6 +1462,7 @@ impl App {
         if line == "/clear" {
             self.entries.clear();
             self.invalidate_render_cache();
+            self.needs_screen_clear = true;
             if let Some(memory) = &self.memory {
                 if let Err(err) = memory.clear_session(&self.session_id) {
                     self.push_entry(
@@ -1359,48 +1471,42 @@ impl App {
                     );
                 }
             }
-            self.push_entry(EntryKind::System, "cleared");
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
+            self.last_status = "cleared".to_string();
             return;
         }
 
         if line == "/events on" {
             self.show_tool_events = true;
             self.push_entry(EntryKind::System, "tool events: on");
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
             return;
         }
 
         if line == "/events off" {
             self.show_tool_events = false;
             self.push_entry(EntryKind::System, "tool events: off");
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
             return;
         }
 
         if let Some(rest) = line.strip_prefix("/theme") {
             self.handle_theme_change(rest.trim());
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
             return;
         }
 
         if let Some(rest) = line.strip_prefix("/provider") {
             let target = rest.trim();
             self.handle_primary_change(target);
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
             return;
         }
 
         if let Some(rest) = line.strip_prefix("/primary") {
             let target = rest.trim();
             self.handle_primary_change(target);
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
             return;
         }
 
@@ -1470,11 +1576,11 @@ impl App {
                 }
             };
             self.push_entry(EntryKind::Error, msg);
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_input_buffer();
             return;
         }
 
+        line = self.consume_pending_pastes(&line);
         self.push_entry(EntryKind::User, typed_line);
         if !is_slash {
             if let Some(memory) = &self.memory {
@@ -1517,8 +1623,7 @@ impl App {
         self.start_running_state(run_target.clone());
         self.last_tool_event.clear();
         self.last_status = format!("dispatching {}", run_target);
-        self.input.clear();
-        self.cursor = 0;
+        self.clear_input_buffer();
 
         let line_for_worker = if line.starts_with("/") {
             line.clone()
@@ -2218,6 +2323,10 @@ impl App {
                 self.assistant_idx == Some(idx) || self.agent_entries.values().any(|&i| i == idx);
             let is_processing =
                 self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
+            // Extra spacing before assistant entries for visual separation.
+            if matches!(entry.kind, EntryKind::Assistant) && idx > 0 {
+                lines.push(Line::from(""));
+            }
             match entry.kind {
                 EntryKind::User => {
                     let parts: Vec<&str> = entry.text.split('\n').collect();
@@ -2254,23 +2363,30 @@ impl App {
                             .fg(provider_color)
                             .add_modifier(Modifier::BOLD)
                     };
-                    lines.push(Line::from(Span::styled(label, label_style)));
+                    // Keep assistant header text stable across running->done transitions.
+                    // If header text changes (for example appending elapsed time on done),
+                    // scrollback append logic has to replay from this line and can look like
+                    // the whole answer got duplicated.
+                    lines.push(Line::from(vec![Span::styled(label, label_style)]));
 
-                    let raw_text = if entry.text.trim().is_empty() {
-                        "…".to_string()
+                    let cleaned_text = cleaned_assistant_text(entry);
+                    let raw_text = if cleaned_text.trim().is_empty() {
+                        String::new()
                     } else {
-                        cleaned_assistant_text(entry).to_string()
+                        cleaned_text
                     };
                     let base_style = if is_processing {
                         Style::default().fg(palette.assistant_processing_text)
                     } else {
                         Style::default().fg(palette.assistant_text)
                     };
-                    let md_lines = render_markdown(&raw_text, base_style, palette);
-                    for md_line in md_lines {
-                        let mut spans = vec![Span::raw("  ")];
-                        spans.extend(md_line);
-                        lines.push(Line::from(spans));
+                    if !raw_text.is_empty() {
+                        let md_lines = render_markdown(&raw_text, base_style, palette);
+                        for md_line in md_lines {
+                            let mut spans = vec![Span::raw("  ")];
+                            spans.extend(md_line);
+                            lines.push(Line::from(spans));
+                        }
                     }
                 }
                 EntryKind::System => {
@@ -2749,6 +2865,44 @@ mod tests {
     }
 
     #[test]
+    fn agent_done_sets_elapsed_only_for_active_entry() {
+        let mut app = App::new();
+        app.push_entry(EntryKind::Assistant, "[claude]\nold answer");
+        app.entries[0].elapsed_secs = Some(7);
+        app.push_entry(EntryKind::Assistant, "[claude]\ncurrent answer");
+        app.agent_entries.insert(Provider::Claude, 1);
+        app.run_started_at = Some(Instant::now());
+
+        let (tx, rx) = unbounded::<WorkerEvent>();
+        app.rx = Some(rx);
+        tx.send(WorkerEvent::AgentDone(Provider::Claude))
+            .expect("send agent done event");
+
+        assert!(app.poll_worker());
+        assert_eq!(app.entries[0].elapsed_secs, Some(7));
+        assert!(app.entries[1].elapsed_secs.is_some());
+    }
+
+    #[test]
+    fn assistant_header_text_stable_across_running_done_transition() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[codex]\nanswer");
+        app.entries[0].elapsed_secs = Some(12);
+        app.agent_entries.insert(Provider::Codex, 0);
+        app.running = true;
+
+        let running_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
+
+        app.running = false;
+        app.agent_entries.clear();
+        let done_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
+
+        assert_eq!(running_header, done_header);
+        assert_eq!(done_header, "codex");
+    }
+
+    #[test]
     fn wrapped_stream_growth_keeps_tail_when_autoscroll_on() {
         let mut app = App::new();
         app.update_viewport(24, 12);
@@ -2843,7 +2997,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_append_ranges_keeps_unchanged_tail_and_appended_end() {
+    fn compute_append_ranges_appends_from_first_difference() {
         let old = vec![
             "user".to_string(),
             "assistant (thinking...)".to_string(),
@@ -2857,6 +3011,28 @@ mod tests {
             "tool progress".to_string(),
             "tool done".to_string(),
         ];
-        assert_eq!(compute_append_ranges(&old, &new), vec![(1, 2), (4, 5)]);
+        assert_eq!(compute_append_ranges(&old, &new), vec![(1, 5)]);
+    }
+
+    #[test]
+    fn large_paste_is_collapsed_and_restored_before_dispatch() {
+        let mut app = App::new();
+        let payload = "line ".repeat(220);
+        app.handle_paste_event(&payload);
+
+        assert!(app.input.starts_with("[Pasted Content "));
+        assert_eq!(app.pending_pastes.len(), 1);
+
+        let expanded = app.consume_pending_pastes(&app.input.clone());
+        assert_eq!(expanded, payload);
+        assert!(app.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn short_paste_keeps_plain_text() {
+        let mut app = App::new();
+        app.handle_paste_event("hello\nworld");
+        assert_eq!(app.input, "hello\nworld");
+        assert!(app.pending_pastes.is_empty());
     }
 }

@@ -1,52 +1,66 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use super::{App, Mode, ThemePalette};
-use crate::{input_cursor_position, providers_label, truncate, SPINNER};
+use crate::{input_cursor_position, providers_label, truncate};
 
 pub(super) fn draw(f: &mut Frame, app: &App) {
+    let frame_area = f.area();
     let theme = app.theme_palette();
     let prompt_prefix = "> ";
     let prompt_width = UnicodeWidthStr::width(prompt_prefix) as u16;
-    let max_input_height = f.size().height.saturating_sub(2).max(1);
+    let activity_h: u16 = if app.running {
+        let agent_count = app.agent_entries.len().max(1) as u16;
+        1 + agent_count // empty line + N agent lines
+    } else {
+        0
+    };
+    let hints_h: u16 = if app.inline_hints().is_empty() { 0 } else { 1 };
+    // Reserve rows for: activity(0 or 3) + gaps(2~3) + hints(0~1) + status(1).
+    let fixed_rows = activity_h + 2 + hints_h + 1;
+    let max_input_height = frame_area.height.saturating_sub(fixed_rows).max(3);
     let input_height = app
-        .input_height(f.size().width.max(1), prompt_width)
+        .input_height(frame_area.width.max(1), prompt_width)
         .saturating_add(2)
         .min(max_input_height);
     let prompt_style = Style::default()
         .fg(theme.prompt)
         .add_modifier(Modifier::BOLD);
     let input_lines = build_input_lines(app, prompt_prefix, prompt_style, theme);
-    let activity_h: u16 = if app.running { 1 } else { 0 };
-    let hints_h: u16 = if app.inline_hints().is_empty() { 0 } else { 1 };
     // Composer-only viewport: transcript is appended above via insert_before.
+    // Layout: [gap] [activity] [gap] [input] [hints] [gap] [status]
     let mut constraints = Vec::new();
     if activity_h > 0 {
+        constraints.push(Constraint::Length(1)); // gap above activity
         constraints.push(Constraint::Length(activity_h));
     }
+    constraints.push(Constraint::Length(1)); // gap above input
     constraints.push(Constraint::Length(input_height));
     if hints_h > 0 {
         constraints.push(Constraint::Length(hints_h));
     }
-    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(1)); // gap above status
+    constraints.push(Constraint::Length(1)); // status bar
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(f.size());
+        .split(frame_area);
 
     let mut section_idx = 0usize;
     let activity_chunk = if activity_h > 0 {
+        section_idx += 1; // skip gap
         let c = chunks[section_idx];
         section_idx += 1;
         Some(c)
     } else {
         None
     };
+    section_idx += 1; // skip gap above input
     let input_chunk = chunks[section_idx];
     section_idx += 1;
     let hint_chunk = if hints_h > 0 {
@@ -56,12 +70,13 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     } else {
         None
     };
+    section_idx += 1; // skip gap above status
     let status_chunk = chunks[section_idx];
 
-    // Real-time activity line between transcript and composer.
+    // Real-time activity area between transcript and composer.
     if let Some(area) = activity_chunk {
-        let activity_line = build_activity_line(app, theme);
-        let activity_panel = Paragraph::new(Text::from(vec![activity_line]));
+        let activity_lines = build_activity_lines(app, theme);
+        let activity_panel = Paragraph::new(Text::from(activity_lines));
         f.render_widget(activity_panel, area);
     }
 
@@ -87,33 +102,16 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         let cursor_y = input_chunk.y
             + cy.saturating_add(top_padding)
                 .min(input_chunk.height.saturating_sub(1));
-        f.set_cursor(cursor_x, cursor_y);
+        f.set_cursor_position((cursor_x, cursor_y));
     }
 
-    let mode = match app.mode {
-        Mode::Normal => "normal",
-        Mode::CommandPalette => "command",
-        Mode::HistorySearch => "history",
-        Mode::Approval => "approval",
-    };
-    let run_state = if app.running {
-        format!("running {}", SPINNER[app.spinner_idx])
-    } else {
-        "idle".to_string()
-    };
-    let transcript_lines = app.cached_log_lines().len();
-    // Status bar (single merged bar)
+    // Status bar: compact, only essential info
+    let cancel_hint = if app.running { " | Esc cancel" } else { "" };
     let status = Paragraph::new(format!(
-        " mode:{} | theme:{} | primary:{} | agents:{} | events:{} | {} | lines:{} | {} | Esc {} | Ctrl+K cmds | Ctrl+R history | Ctrl+C exit",
-        mode,
-        app.theme_name(),
+        " {} | {}{} | Ctrl+K cmds | Ctrl+C exit",
         app.primary_provider.as_str(),
         providers_label(&app.available_providers),
-        if app.show_tool_events { "on" } else { "off" },
-        run_state,
-        transcript_lines,
-        truncate(&app.last_status, 28),
-        if app.running { "cancel" } else { "-" },
+        cancel_hint,
     ))
     .style(Style::default().fg(theme.status_text));
     f.render_widget(status, status_chunk);
@@ -131,7 +129,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 
 pub(super) fn draw_exit(f: &mut Frame, app: &App) {
     let _ = app;
-    f.render_widget(Clear, f.size());
+    f.render_widget(Clear, f.area());
 }
 
 fn build_input_lines(
@@ -208,56 +206,146 @@ fn build_hint_line(app: &App, theme: ThemePalette) -> Line<'static> {
     Line::from(spans)
 }
 
-fn build_activity_line(app: &App, theme: ThemePalette) -> Line<'static> {
-    if !app.running {
-        return Line::from(" ");
+// Breathing intensity (8 frames, cycling for ~1s period at 120ms tick).
+const BREATH_SCALE_PCT: [u16; 8] = [58, 70, 82, 94, 108, 94, 82, 70];
+
+const ACTIVITY_VERBS: &[&str] = &[
+    "Thinking",
+    "Pondering",
+    "Ruminating",
+    "Conjuring",
+    "Perambulating",
+    "Contemplating",
+    "Synthesizing",
+    "Weaving",
+    "Assembling",
+    "Composing",
+    "Crafting",
+    "Exploring",
+];
+
+fn scale_rgb(value: u8, pct: u16) -> u8 {
+    ((value as u16 * pct) / 100).min(255) as u8
+}
+
+fn color_with_breath(base: Color, frame: usize) -> Color {
+    let pct = BREATH_SCALE_PCT[frame % BREATH_SCALE_PCT.len()];
+    match base {
+        Color::Rgb(r, g, b) => Color::Rgb(scale_rgb(r, pct), scale_rgb(g, pct), scale_rgb(b, pct)),
+        _ => base,
     }
+}
 
-    let active = app
-        .active_provider
-        .map(|provider| provider.as_str().to_string())
-        .filter(|label| !label.is_empty())
-        .unwrap_or_else(|| {
-            if app.run_target.trim().is_empty() {
-                "agent".to_string()
-            } else {
-                app.run_target.clone()
-            }
-        });
-    let elapsed_secs = app.running_elapsed_secs();
-    let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
-    let tool_hint = if app.last_tool_event.trim().is_empty() {
-        "no tool call yet".to_string()
+fn spinner_base_color(app: &App, theme: ThemePalette) -> Color {
+    match app.primary_provider {
+        super::Provider::Claude => theme.claude_label,
+        super::Provider::Codex => theme.codex_label,
+    }
+}
+
+fn format_chars(n: usize) -> String {
+    if n >= 1000 {
+        format!("\u{2191} {:.1}k", n as f64 / 1000.0)
     } else {
-        truncate(&app.last_tool_event, 48)
-    };
+        format!("\u{2191} {}", n)
+    }
+}
 
-    Line::from(vec![
-        Span::styled(
-            format!(" {} ", SPINNER[app.spinner_idx]),
-            Style::default()
-                .fg(theme.activity_badge_fg)
-                .bg(theme.activity_badge_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                " {} | elapsed {} | {} | {} ",
-                active,
-                elapsed,
-                truncate(&app.last_status, 32),
-                tool_hint
-            ),
-            Style::default()
-                .fg(theme.activity_text)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Esc cancel", Style::default().fg(theme.muted_text)),
-    ])
+fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
+    if app.running {
+        let frame = app.spinner_idx % BREATH_SCALE_PCT.len();
+        let dot_color = color_with_breath(spinner_base_color(app, theme), frame);
+
+        let mut lines = vec![Line::from("")];
+
+        // Collect active agents from agent_entries, sorted deterministically.
+        let mut agents: Vec<_> = app.agent_entries.keys().copied().collect();
+        agents.sort_by_key(|p| match p {
+            super::Provider::Claude => 0,
+            super::Provider::Codex => 1,
+        });
+
+        if agents.is_empty() {
+            // Fallback before any AgentStart event arrives.
+            let active = app
+                .active_provider
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_else(|| "agent".to_string());
+            let elapsed_secs = app.running_elapsed_secs();
+            let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
+            let activity = if app.last_tool_event.trim().is_empty() {
+                let verb_idx = (app.spinner_idx / 64) % ACTIVITY_VERBS.len();
+                ACTIVITY_VERBS[verb_idx].to_string()
+            } else {
+                truncate(&app.last_tool_event, 68)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    " \u{25cf} ",
+                    Style::default()
+                        .fg(dot_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {} | {} | {} ", active, activity, elapsed),
+                    Style::default()
+                        .fg(theme.activity_text)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        } else {
+            for &provider in &agents {
+                let elapsed_secs = app
+                    .agent_started_at
+                    .get(&provider)
+                    .map(|t| t.elapsed().as_secs())
+                    .unwrap_or(0);
+                let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
+
+                let initial_idx = app.agent_verb_idx.get(&provider).copied().unwrap_or(0);
+                let verb_idx =
+                    (initial_idx + (elapsed_secs as usize / 8)) % ACTIVITY_VERBS.len();
+                let verb = ACTIVITY_VERBS[verb_idx];
+                let activity = if app.last_tool_event.trim().is_empty() {
+                    verb.to_string()
+                } else {
+                    truncate(&app.last_tool_event, 56)
+                };
+
+                let chars = app.agent_chars.get(&provider).copied().unwrap_or(0);
+                let chars_str = format_chars(chars);
+
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        " \u{25cf} ",
+                        Style::default()
+                            .fg(dot_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            " {} | {} | {} | {} ",
+                            provider.as_str(),
+                            activity,
+                            elapsed,
+                            chars_str
+                        ),
+                        Style::default()
+                            .fg(theme.activity_text)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            }
+        }
+
+        lines
+    } else {
+        vec![Line::from(" ")]
+    }
 }
 
 fn draw_palette(f: &mut Frame, app: &App, theme: ThemePalette) {
-    let area = centered_rect(70, 58, f.size());
+    let area = centered_rect(70, 58, f.area());
     let items = app.filtered_commands();
     let mut lines = vec![
         Line::from(Span::styled(
@@ -286,7 +374,7 @@ fn draw_palette(f: &mut Frame, app: &App, theme: ThemePalette) {
 }
 
 fn draw_history(f: &mut Frame, app: &App, theme: ThemePalette) {
-    let area = centered_rect(70, 58, f.size());
+    let area = centered_rect(70, 58, f.area());
     let items = app.filtered_history();
     let mut lines = vec![
         Line::from(Span::styled(
@@ -318,7 +406,7 @@ fn draw_history(f: &mut Frame, app: &App, theme: ThemePalette) {
 }
 
 fn draw_approval(f: &mut Frame, app: &App, theme: ThemePalette) {
-    let area = centered_rect(64, 40, f.size());
+    let area = centered_rect(64, 40, f.area());
     let pending = app.approval.as_ref();
     let lines = if let Some(p) = pending {
         vec![

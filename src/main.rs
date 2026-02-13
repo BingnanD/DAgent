@@ -7,7 +7,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use crossterm::cursor;
 use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement};
 use ratatui::backend::CrosstermBackend;
@@ -25,8 +26,9 @@ use app::{EntryKind, LogEntry, Provider};
 pub(crate) use orchestrator::execute_line;
 
 const APP_VERSION: &str = "0.2.1-rs";
-// ASCII-only breathing pulse to avoid terminal/font compatibility issues.
-const SPINNER: &[&str] = &[".", ".", "o", "o", "O", "O", "o", "o"];
+// Breathing dot indicator (kept for potential future use).
+#[allow(dead_code)]
+const SPINNER: &[&str] = &["●"];
 const THINKING_PLACEHOLDER: &str = "(thinking...)";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +106,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
         )
         .ok();
     }
+    crossterm::execute!(std::io::stdout(), EnableBracketedPaste).ok();
 
     terminal.hide_cursor().ok();
     Ok(terminal)
@@ -117,11 +120,12 @@ fn compute_inline_height(term_height: u16) -> u16 {
         }
     }
 
-    // Keep a compact composer viewport (input/status), transcript grows in terminal scrollback.
-    8u16.min(max_allowed).max(4)
+    // Compact composer viewport (activity + input + status + gaps).
+    12u16.min(max_allowed).max(6)
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    crossterm::execute!(std::io::stdout(), DisableBracketedPaste).ok();
     crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags).ok();
     disable_raw_mode().context("disable raw mode")?;
     terminal.show_cursor().context("show cursor")?;
@@ -206,17 +210,18 @@ fn cleaned_assistant_text(entry: &LogEntry) -> String {
     let text = entry.text.trim_end();
     let mut lines = text.lines();
     let Some(first) = lines.next() else {
-        return entry.text.clone();
+        return String::new();
     };
-    if extract_agent_marker_from_line(first.trim()).is_some() {
-        let rest = lines.collect::<Vec<_>>().join("\n");
-        if rest.trim().is_empty() {
-            entry.text.clone()
-        } else {
-            rest
-        }
+    let cleaned = if extract_agent_marker_from_line(first.trim()).is_some() {
+        lines.collect::<Vec<_>>().join("\n")
     } else {
-        entry.text.clone()
+        text.to_string()
+    };
+    let cleaned_trimmed = cleaned.trim();
+    if cleaned_trimmed.is_empty() || cleaned_trimmed == THINKING_PLACEHOLDER {
+        String::new()
+    } else {
+        cleaned
     }
 }
 
