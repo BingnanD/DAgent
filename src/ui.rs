@@ -5,7 +5,7 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use super::{App, Mode, ThemePalette};
+use super::{App, Mode, Provider, ThemePalette};
 use crate::{input_cursor_position, providers_label, truncate};
 
 pub(super) fn draw(f: &mut Frame, app: &App) {
@@ -236,10 +236,10 @@ fn color_with_breath(base: Color, frame: usize) -> Color {
     }
 }
 
-fn spinner_base_color(app: &App, theme: ThemePalette) -> Color {
-    match app.primary_provider {
-        super::Provider::Claude => theme.claude_label,
-        super::Provider::Codex => theme.codex_label,
+fn spinner_base_color(provider: Provider, theme: ThemePalette) -> Color {
+    match provider {
+        Provider::Claude => theme.claude_label,
+        Provider::Codex => theme.codex_label,
     }
 }
 
@@ -254,7 +254,6 @@ fn format_chars(n: usize) -> String {
 fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
     if app.running {
         let frame = app.spinner_idx % BREATH_SCALE_PCT.len();
-        let dot_color = color_with_breath(spinner_base_color(app, theme), frame);
 
         let mut lines = vec![Line::from("")];
 
@@ -267,10 +266,9 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
 
         if agents.is_empty() {
             // Fallback before any AgentStart event arrives.
-            let active = app
-                .active_provider
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_else(|| "agent".to_string());
+            let active_provider = app.active_provider.unwrap_or(app.primary_provider);
+            let active = active_provider.as_str().to_string();
+            let dot_color = color_with_breath(spinner_base_color(active_provider, theme), frame);
             let elapsed_secs = app.running_elapsed_secs();
             let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
             let activity = if app.last_tool_event.trim().is_empty() {
@@ -279,6 +277,7 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
             } else {
                 truncate(&app.last_tool_event, 68)
             };
+            let line_color = spinner_base_color(active_provider, theme);
             lines.push(Line::from(vec![
                 Span::styled(
                     " \u{25cf} ",
@@ -289,12 +288,14 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
                 Span::styled(
                     format!(" {} | {} | {} ", active, activity, elapsed),
                     Style::default()
-                        .fg(theme.activity_text)
+                        .fg(line_color)
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));
         } else {
             for &provider in &agents {
+                let dot_color = color_with_breath(spinner_base_color(provider, theme), frame);
+                let line_color = spinner_base_color(provider, theme);
                 let elapsed_secs = app
                     .agent_started_at
                     .get(&provider)
@@ -331,7 +332,7 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
                             chars_str
                         ),
                         Style::default()
-                            .fg(theme.activity_text)
+                            .fg(line_color)
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]));
