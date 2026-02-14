@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Sender;
@@ -7,12 +7,22 @@ use serde_json::Value;
 
 use crate::app::{Provider, WorkerEvent};
 
+fn is_root_user() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
 fn claude_permission_mode() -> String {
-    std::env::var("DAGENT_CLAUDE_PERMISSION_MODE")
+    let mode = std::env::var("DAGENT_CLAUDE_PERMISSION_MODE")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "bypassPermissions".to_string())
+        .unwrap_or_else(|| "bypassPermissions".to_string());
+    // Claude CLI disallows bypassPermissions under root; fall back automatically
+    if mode == "bypassPermissions" && is_root_user() {
+        "acceptEdits".to_string()
+    } else {
+        mode
+    }
 }
 
 fn claude_allowed_tools() -> Option<String> {
@@ -34,19 +44,92 @@ fn is_root_bypass_error(text: &str) -> bool {
     t.contains("--dangerously-skip-permissions") && (t.contains("root") || t.contains("sudo"))
 }
 
-fn run_prompt_once(
+fn run_stream_once(
+    provider: Provider,
     prompt: &str,
     permission_mode: &str,
     allowed_tools: Option<&str>,
-) -> std::result::Result<Output, String> {
+    tx: &Sender<WorkerEvent>,
+    child_pids: &Arc<Mutex<Vec<u32>>>,
+) -> std::result::Result<String, String> {
     let mut cmd = Command::new("claude");
-    cmd.stdin(Stdio::null());
-    cmd.arg("--permission-mode").arg(permission_mode);
+    cmd.arg("--print")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--include-partial-messages")
+        .arg("--permission-mode")
+        .arg(permission_mode);
     add_allowed_tools_arg(&mut cmd, allowed_tools);
     cmd.arg("-p")
-        .arg(prompt)
-        .output()
-        .map_err(|e| format!("claude fallback failed: {e}"))
+        .arg(prompt);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("claude fallback spawn failed: {e}"))?;
+    if let Ok(mut pids) = child_pids.lock() {
+        pids.push(child.id());
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "claude fallback stdout missing".to_string())?;
+    let reader = BufReader::new(stdout);
+
+    let mut emitted = false;
+    let mut fallback_lines: Vec<String> = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("claude fallback read failed: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        fallback_lines.push(line.clone());
+        if let Some(tool_info) = extract_tool_use(&line) {
+            let _ = tx.send(WorkerEvent::Tool(tool_info));
+        } else if let Some(progress) = extract_progress_event(&line) {
+            let _ = tx.send(WorkerEvent::Progress(progress));
+        }
+        if let Some(chunk) = extract_delta_text(&line) {
+            if !chunk.trim().is_empty() {
+                emitted = true;
+                let _ = tx.send(WorkerEvent::AgentChunk {
+                    provider,
+                    chunk,
+                });
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("claude fallback wait failed: {e}"))?;
+    if !status.success() {
+        let stderr_bytes = child.stderr.take().map(|mut s| {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut s, &mut buf).ok();
+            buf
+        }).unwrap_or_default();
+        return Err(format!(
+            "claude fallback failed: {}",
+            String::from_utf8_lossy(&stderr_bytes).trim()
+        ));
+    }
+
+    if emitted {
+        return Ok(String::new());
+    }
+    if let Some(text) = fallback_lines
+        .iter()
+        .rev()
+        .find_map(|line| extract_fallback_text(line))
+    {
+        return Ok(text);
+    }
+    Ok(fallback_lines.last().cloned().unwrap_or_default())
 }
 
 pub(crate) fn run_stream(
@@ -67,7 +150,8 @@ pub(crate) fn run_stream(
         .arg("--permission-mode")
         .arg(&permission_mode);
     add_allowed_tools_arg(&mut cmd, allowed_tools.as_deref());
-    cmd.arg(prompt);
+    cmd.arg("-p")
+        .arg(prompt);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -100,6 +184,8 @@ pub(crate) fn run_stream(
         }
         if let Some(tool_info) = extract_tool_use(&line) {
             let _ = tx.send(WorkerEvent::Tool(tool_info));
+        } else if let Some(progress) = extract_progress_event(&line) {
+            let _ = tx.send(WorkerEvent::Progress(progress));
         }
         if let Some(chunk) = extract_delta_text(&line) {
             if !chunk.trim().is_empty() {
@@ -150,30 +236,18 @@ pub(crate) fn run_stream(
     }
 
     let mut mode_for_fallback = permission_mode.clone();
-    let mut output = run_prompt_once(prompt, &mode_for_fallback, allowed_tools.as_deref())?;
-    if !output.status.success()
-        && mode_for_fallback == "bypassPermissions"
-        && is_root_bypass_error(&String::from_utf8_lossy(&output.stderr))
-    {
-        mode_for_fallback = "acceptEdits".to_string();
-        let _ = tx.send(WorkerEvent::Tool(
-            "claude bypassPermissions blocked under root; retrying with acceptEdits".to_string(),
-        ));
-        output = run_prompt_once(prompt, &mode_for_fallback, allowed_tools.as_deref())?;
+    let result = run_stream_once(provider, prompt, &mode_for_fallback, allowed_tools.as_deref(), tx, child_pids);
+    match result {
+        Ok(text) => return Ok(text),
+        Err(ref e) if mode_for_fallback == "bypassPermissions" && is_root_bypass_error(e) => {
+            mode_for_fallback = "acceptEdits".to_string();
+            let _ = tx.send(WorkerEvent::Tool(
+                "claude bypassPermissions blocked under root; retrying with acceptEdits".to_string(),
+            ));
+            return run_stream_once(provider, prompt, &mode_for_fallback, allowed_tools.as_deref(), tx, child_pids);
+        }
+        Err(e) => return Err(e),
     }
-
-    if !output.status.success() {
-        return Err(format!(
-            "claude failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-
-    let fallback_text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if is_quota_error_text(&fallback_text) {
-        return Err(format!("claude quota/rate limit: {}", fallback_text));
-    }
-    Ok(fallback_text)
 }
 
 pub(crate) fn is_quota_error_text(text: &str) -> bool {
@@ -218,22 +292,12 @@ fn extract_tool_use(line: &str) -> Option<String> {
             let event = value.get("event")?;
             let inner_type = event.get("type").and_then(Value::as_str)?;
             match inner_type {
-                "content_block_start" => {
-                    let cb = event.get("content_block")?;
-                    let cb_type = cb.get("type").and_then(Value::as_str)?;
-                    if cb_type == "tool_use" {
-                        let name = cb.get("name").and_then(Value::as_str).unwrap_or("unknown");
-                        Some(format!("calling tool: {}", name))
-                    } else if cb_type == "tool_result" {
-                        let name = cb.get("name").and_then(Value::as_str).unwrap_or("tool");
-                        Some(format!("finished: {}", name))
-                    } else {
-                        None
-                    }
-                }
-                "message_start" => {
-                    // New turn starting – the agent is thinking.
-                    Some("thinking...".to_string())
+                "content_block_start" | "message_start" => {
+                    // These are progress-only events; handled by extract_progress_event.
+                    // content_block_start with tool_use is an early hint; the full
+                    // tool_use object (with input details) arrives later and goes to
+                    // the transcript via the top-level "tool_use"/"tool" branch.
+                    None
                 }
                 "message_stop" | "message_delta" => None,
                 "content_block_stop" => None,
@@ -275,6 +339,45 @@ fn extract_tool_use(line: &str) -> Option<String> {
             }
         }
         "tool_result" => {
+            // Tool results are progress-only; handled by extract_progress_event.
+            None
+        }
+        // System-level messages are progress-only; handled by extract_progress_event.
+        "system" => None,
+        _ => None,
+    }
+}
+
+/// Extract progress-only events (thinking, finished, system) that should update
+/// the spinner but NOT be written to the transcript.
+fn extract_progress_event(line: &str) -> Option<String> {
+    let value = parse_json_line(line)?;
+    let event_type = value.get("type").and_then(Value::as_str)?;
+    match event_type {
+        "stream_event" => {
+            let event = value.get("event")?;
+            let inner_type = event.get("type").and_then(Value::as_str)?;
+            match inner_type {
+                "message_start" => Some("thinking...".to_string()),
+                "content_block_start" => {
+                    let cb = event.get("content_block")?;
+                    let cb_type = cb.get("type").and_then(Value::as_str)?;
+                    match cb_type {
+                        "tool_use" => {
+                            let name = cb.get("name").and_then(Value::as_str).unwrap_or("unknown");
+                            Some(format!("calling tool: {}", name))
+                        }
+                        "tool_result" => {
+                            let name = cb.get("name").and_then(Value::as_str).unwrap_or("tool");
+                            Some(format!("finished: {}", name))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        "tool_result" => {
             let name = value
                 .get("name")
                 .or_else(|| value.get("tool"))
@@ -282,7 +385,6 @@ fn extract_tool_use(line: &str) -> Option<String> {
                 .unwrap_or("tool");
             Some(format!("finished: {}", name))
         }
-        // Claude Code system-level messages (subagent spawning, etc.)
         "system" => {
             let msg = value
                 .get("message")

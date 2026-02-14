@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{App, Mode, Provider, ThemePalette};
 use crate::{input_cursor_position, providers_label, truncate};
@@ -20,22 +20,25 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let prompt_width = UnicodeWidthStr::width(prompt_prefix) as u16;
     let composer_width = frame_area.width.saturating_sub(PANEL_HORIZONTAL_INSET).max(1);
 
+    let show_finished = app.finished_at.is_some() && !app.running;
     let activity_rows = if app.running {
-        app.agent_entries.len().max(1) as u16
+        let spinner_rows = app.agent_entries.len().max(1) as u16;
+        let log_rows = app.activity_log.len() as u16;
+        // Cap so the activity area never exceeds ~40% of the terminal.
+        let max_activity = (frame_area.height * 2 / 5).max(3);
+        (spinner_rows + log_rows).min(max_activity)
+    } else if show_finished {
+        1
     } else {
         0
     };
-    let activity_h = if activity_rows > 0 {
-        activity_rows.saturating_add(PANEL_VERTICAL_INSET)
-    } else {
-        0
-    };
+    let activity_h = activity_rows;
     let hints_h = if app.inline_hints().is_empty() {
         0
     } else {
         1u16.saturating_add(PANEL_VERTICAL_INSET)
     };
-    let status_h: u16 = 1 + PANEL_VERTICAL_INSET;
+    let status_h: u16 = 1;
     let fixed_rows = activity_h + hints_h + status_h;
     let max_input_height = frame_area.height.saturating_sub(fixed_rows).max(3);
     let input_height = app
@@ -43,7 +46,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         .saturating_add(PANEL_VERTICAL_INSET)
         .min(max_input_height);
     let prompt_style = theme.prompt_style();
-    let input_lines = build_input_lines(app, prompt_prefix, prompt_style, theme);
+    let input_lines = build_input_lines(app, prompt_prefix, prompt_style, theme, composer_width);
 
     // Composer-only viewport: transcript is appended above via insert_before.
     let mut constraints = Vec::new();
@@ -85,16 +88,29 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         let activity_lines = build_activity_lines(app, theme);
         let activity_panel = Paragraph::new(Text::from(activity_lines))
             .style(theme.panel_surface_style())
-            .block(panel_block(theme, "activity"))
             .wrap(Wrap { trim: false });
         f.render_widget(activity_panel, area);
     }
 
     // Input area
+    let visible_rows = input_height.saturating_sub(PANEL_VERTICAL_INSET).max(1);
+    let input_scroll = app.input_scroll_offset(composer_width, prompt_width, visible_rows);
     let input = Paragraph::new(Text::from(input_lines))
         .style(theme.input_surface_style())
-        .block(panel_block(theme, "compose"))
-        .wrap(Wrap { trim: false });
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(theme.panel_border_style())
+                .padding(Padding::new(
+                    PANEL_PADDING_X,
+                    PANEL_PADDING_X,
+                    PANEL_PADDING_Y,
+                    PANEL_PADDING_Y,
+                ))
+                .style(theme.panel_surface_style()),
+        )
+        .scroll((input_scroll, 0));
     f.render_widget(input, input_chunk);
 
     // Hints
@@ -117,23 +133,23 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             .saturating_sub(PANEL_VERTICAL_INSET)
             .max(1);
         let (cx, cy) = input_cursor_position(&app.input, app.cursor, content_width, prompt_width);
+        let visible_cy = cy.saturating_sub(input_scroll);
         let cursor_x =
             input_chunk.x + 1 + PANEL_PADDING_X + cx.min(content_width.saturating_sub(1));
         let cursor_y =
-            input_chunk.y + 1 + PANEL_PADDING_Y + cy.min(content_height.saturating_sub(1));
+            input_chunk.y + 1 + PANEL_PADDING_Y + visible_cy.min(content_height.saturating_sub(1));
         f.set_cursor_position((cursor_x, cursor_y));
     }
 
     // Status bar
     let cancel_hint = if app.running { " | Esc cancel" } else { "" };
     let status = Paragraph::new(format!(
-        "{} | {}{} | Ctrl+R history | Ctrl+C exit",
+        " {} | {}{} | Ctrl+R history | Ctrl+C exit",
         app.primary_provider.as_str(),
         providers_label(&app.available_providers),
         cancel_hint,
     ))
-    .style(theme.status_style())
-    .block(panel_block(theme, "status"));
+    .style(theme.status_style());
     f.render_widget(status, status_chunk);
 
     if matches!(app.mode, Mode::HistorySearch) {
@@ -179,6 +195,7 @@ fn build_input_lines(
     prompt_prefix: &str,
     prompt_style: Style,
     theme: ThemePalette,
+    content_width: u16,
 ) -> Vec<Line<'static>> {
     if app.input.is_empty() {
         return vec![Line::from(vec![
@@ -190,19 +207,72 @@ fn build_input_lines(
         ])];
     }
 
+    let width = content_width.max(1) as usize;
+    let prompt_w = UnicodeWidthStr::width(prompt_prefix);
+    let text_style = Style::default().fg(theme.input_text);
+    let indent: String = " ".repeat(prompt_w);
     let mut lines = Vec::new();
-    let indent = " ".repeat(prompt_prefix.chars().count());
-    for (idx, part) in app.input.split('\n').enumerate() {
-        if idx == 0 {
-            lines.push(Line::from(vec![
-                Span::styled(prompt_prefix.to_string(), prompt_style),
-                Span::styled(part.to_string(), Style::default().fg(theme.input_text)),
-            ]));
+    let mut is_first_logical = true;
+
+    for part in app.input.split('\n') {
+        let prefix = if is_first_logical {
+            prompt_prefix
         } else {
-            lines.push(Line::from(vec![
-                Span::styled(indent.clone(), prompt_style),
-                Span::styled(part.to_string(), Style::default().fg(theme.input_text)),
-            ]));
+            &indent
+        };
+        is_first_logical = false;
+
+        // Manually soft-wrap this logical line, matching input_cursor_position logic.
+        let mut x = prompt_w;
+        let mut seg_start = 0;
+
+        let flush_line =
+            |lines: &mut Vec<Line<'static>>, pfx: &str, seg: &str, is_first_seg: bool| {
+                if is_first_seg {
+                    lines.push(Line::from(vec![
+                        Span::styled(pfx.to_string(), prompt_style),
+                        Span::styled(seg.to_string(), text_style),
+                    ]));
+                } else {
+                    // Continuation lines after soft-wrap: no prefix, just text
+                    lines.push(Line::from(vec![Span::styled(seg.to_string(), text_style)]));
+                }
+            };
+
+        let mut is_first_seg = true;
+        let mut byte_pos = 0;
+
+        for ch in part.chars() {
+            let ch_len = ch.len_utf8();
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+
+            // Check if character overflows current line
+            if x + ch_width > width {
+                // Flush current segment
+                let seg = &part[seg_start..byte_pos];
+                flush_line(&mut lines, prefix, seg, is_first_seg);
+                is_first_seg = false;
+                seg_start = byte_pos;
+                x = 0;
+            }
+
+            x += ch_width;
+            byte_pos += ch_len;
+
+            if x >= width {
+                // Line exactly full, flush and start new line
+                let seg = &part[seg_start..byte_pos];
+                flush_line(&mut lines, prefix, seg, is_first_seg);
+                is_first_seg = false;
+                seg_start = byte_pos;
+                x = 0;
+            }
+        }
+
+        // Flush remaining segment
+        let seg = &part[seg_start..];
+        if !seg.is_empty() || is_first_seg {
+            flush_line(&mut lines, prefix, seg, is_first_seg);
         }
     }
     lines
@@ -280,6 +350,34 @@ fn format_chars(n: usize) -> String {
 }
 
 fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
+    // Finished: show green dot + "completed in XX:XX" persistently.
+    if app.finished_at.is_some() && !app.running {
+        let dot_color = Color::Rgb(120, 120, 128);
+        let elapsed = format!(
+            "{:02}:{:02}",
+            app.finished_elapsed_secs / 60,
+            app.finished_elapsed_secs % 60
+        );
+        let label = if app.finished_provider_name.is_empty() {
+            "agent".to_string()
+        } else {
+            app.finished_provider_name.clone()
+        };
+        return vec![Line::from(vec![
+            Span::styled(
+                " \u{25cf} ",
+                Style::default()
+                    .fg(dot_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} | completed in {} ", label, elapsed),
+                Style::default()
+                    .fg(Color::Rgb(110, 110, 118))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])];
+    }
     if app.running {
         let frame = app.spinner_idx % BREATH_SCALE_PCT.len();
 
@@ -377,6 +475,42 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
                     ),
                 ]));
             }
+        }
+
+        // Append recent activity log entries below the spinner lines.
+        for entry in &app.activity_log {
+            let is_tool_call = entry.contains("calling tool:")
+                || entry.contains("tool:")
+                || entry.contains("invoke ")
+                || entry.contains("exec:");
+            let is_done = entry.contains("finished:") || entry.contains("exec done");
+            let (icon, icon_style, text_style) = if is_tool_call {
+                (
+                    "  \u{25B6} ",
+                    Style::default()
+                        .fg(theme.tool_icon)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.activity_text)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if is_done {
+                (
+                    "  \u{2714} ",
+                    Style::default().fg(theme.processing_label),
+                    Style::default().fg(theme.processing_label),
+                )
+            } else {
+                (
+                    "  \u{25B8} ",
+                    Style::default().fg(theme.tool_icon),
+                    Style::default().fg(theme.tool_text),
+                )
+            };
+            lines.push(Line::from(vec![
+                Span::styled(icon, icon_style),
+                Span::styled(truncate(entry, 72), text_style),
+            ]));
         }
 
         lines

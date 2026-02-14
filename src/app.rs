@@ -99,169 +99,169 @@ impl ThemePreset {
     fn palette(self) -> ThemePalette {
         match self {
             ThemePreset::Fjord => ThemePalette {
-                prompt: Color::Rgb(136, 192, 208),
-                input_bg: Color::Rgb(36, 40, 52),
-                input_text: Color::Rgb(229, 233, 240),
-                muted_text: Color::Rgb(76, 86, 106),
-                highlight_fg: Color::Rgb(236, 239, 244),
-                highlight_bg: Color::Rgb(62, 68, 90),
-                activity_badge_fg: Color::Rgb(236, 239, 244),
-                activity_badge_bg: Color::Rgb(52, 101, 164),
-                activity_text: Color::Rgb(143, 214, 227),
-                status_text: Color::Rgb(76, 86, 106),
-                user_fg: Color::Rgb(236, 239, 244),
-                user_bg: Color::Rgb(36, 40, 52),
-                claude_label: Color::Rgb(255, 128, 48),
-                codex_label: Color::Rgb(86, 182, 194),
-                processing_label: Color::Rgb(136, 192, 208),
-                assistant_text: Color::Rgb(229, 233, 240),
-                assistant_processing_text: Color::Rgb(192, 202, 214),
-                system_text: Color::Rgb(76, 86, 106),
-                tool_icon: Color::Rgb(94, 129, 172),
-                tool_text: Color::Rgb(129, 140, 160),
-                error_label: Color::Rgb(191, 97, 106),
-                error_text: Color::Rgb(208, 135, 112),
-                banner_title: Color::Rgb(136, 192, 208),
-                panel_bg: Color::Rgb(30, 34, 42),
-                panel_fg: Color::Rgb(229, 233, 240),
-                approval_title: Color::Rgb(235, 203, 139),
-                code_fg: Color::Rgb(200, 210, 220),
-                code_bg: Color::Rgb(25, 28, 36),
-                inline_code_fg: Color::Rgb(208, 190, 150),
-                inline_code_bg: Color::Rgb(30, 34, 42),
-                bullet: Color::Rgb(94, 129, 172),
+                prompt: Color::Rgb(145, 145, 150),
+                input_bg: Color::Rgb(16, 16, 18),
+                input_text: Color::Rgb(188, 188, 192),
+                muted_text: Color::Rgb(58, 58, 62),
+                highlight_fg: Color::Rgb(210, 210, 214),
+                highlight_bg: Color::Rgb(34, 34, 38),
+                activity_badge_fg: Color::Rgb(210, 210, 214),
+                activity_badge_bg: Color::Rgb(48, 48, 54),
+                activity_text: Color::Rgb(125, 125, 132),
+                status_text: Color::Rgb(58, 58, 62),
+                user_fg: Color::Rgb(210, 210, 214),
+                user_bg: Color::Rgb(22, 22, 24),
+                claude_label: Color::Rgb(255, 102, 51),
+                codex_label: Color::Rgb(120, 120, 128),
+                processing_label: Color::Rgb(110, 110, 118),
+                assistant_text: Color::Rgb(185, 185, 190),
+                assistant_processing_text: Color::Rgb(130, 130, 138),
+                system_text: Color::Rgb(58, 58, 62),
+                tool_icon: Color::Rgb(85, 85, 92),
+                tool_text: Color::Rgb(95, 95, 102),
+                error_label: Color::Rgb(160, 70, 70),
+                error_text: Color::Rgb(165, 85, 78),
+                banner_title: Color::Rgb(150, 150, 156),
+                panel_bg: Color::Rgb(10, 10, 12),
+                panel_fg: Color::Rgb(185, 185, 190),
+                approval_title: Color::Rgb(165, 120, 80),
+                code_fg: Color::Rgb(170, 170, 178),
+                code_bg: Color::Rgb(6, 6, 8),
+                inline_code_fg: Color::Rgb(140, 138, 132),
+                inline_code_bg: Color::Rgb(18, 18, 22),
+                bullet: Color::Rgb(85, 85, 92),
             },
             ThemePreset::Graphite => ThemePalette {
-                prompt: Color::Rgb(122, 214, 197),
-                input_bg: Color::Rgb(31, 35, 40),
-                input_text: Color::Rgb(229, 232, 235),
-                muted_text: Color::Rgb(117, 126, 138),
-                highlight_fg: Color::Rgb(242, 245, 248),
-                highlight_bg: Color::Rgb(53, 61, 70),
-                activity_badge_fg: Color::Rgb(242, 245, 248),
-                activity_badge_bg: Color::Rgb(44, 114, 122),
-                activity_text: Color::Rgb(153, 223, 209),
-                status_text: Color::Rgb(117, 126, 138),
-                user_fg: Color::Rgb(239, 242, 245),
-                user_bg: Color::Rgb(36, 42, 48),
-                claude_label: Color::Rgb(255, 128, 48),
-                codex_label: Color::Rgb(92, 198, 208),
-                processing_label: Color::Rgb(122, 214, 197),
-                assistant_text: Color::Rgb(229, 232, 235),
-                assistant_processing_text: Color::Rgb(190, 198, 206),
-                system_text: Color::Rgb(117, 126, 138),
-                tool_icon: Color::Rgb(96, 164, 182),
-                tool_text: Color::Rgb(154, 165, 176),
-                error_label: Color::Rgb(216, 124, 138),
-                error_text: Color::Rgb(218, 157, 127),
-                banner_title: Color::Rgb(122, 214, 197),
-                panel_bg: Color::Rgb(26, 30, 35),
-                panel_fg: Color::Rgb(229, 232, 235),
-                approval_title: Color::Rgb(234, 202, 136),
-                code_fg: Color::Rgb(205, 216, 225),
-                code_bg: Color::Rgb(23, 26, 31),
-                inline_code_fg: Color::Rgb(225, 199, 149),
-                inline_code_bg: Color::Rgb(33, 37, 43),
-                bullet: Color::Rgb(96, 164, 182),
+                prompt: Color::Rgb(138, 138, 142),
+                input_bg: Color::Rgb(14, 14, 16),
+                input_text: Color::Rgb(182, 182, 186),
+                muted_text: Color::Rgb(55, 55, 58),
+                highlight_fg: Color::Rgb(205, 205, 208),
+                highlight_bg: Color::Rgb(32, 32, 36),
+                activity_badge_fg: Color::Rgb(205, 205, 208),
+                activity_badge_bg: Color::Rgb(45, 45, 50),
+                activity_text: Color::Rgb(118, 118, 125),
+                status_text: Color::Rgb(52, 52, 56),
+                user_fg: Color::Rgb(205, 205, 208),
+                user_bg: Color::Rgb(20, 20, 22),
+                claude_label: Color::Rgb(255, 102, 51),
+                codex_label: Color::Rgb(115, 115, 122),
+                processing_label: Color::Rgb(105, 105, 112),
+                assistant_text: Color::Rgb(178, 178, 184),
+                assistant_processing_text: Color::Rgb(125, 125, 132),
+                system_text: Color::Rgb(52, 52, 58),
+                tool_icon: Color::Rgb(80, 80, 88),
+                tool_text: Color::Rgb(88, 88, 96),
+                error_label: Color::Rgb(155, 55, 55),
+                error_text: Color::Rgb(160, 72, 62),
+                banner_title: Color::Rgb(148, 148, 155),
+                panel_bg: Color::Rgb(8, 8, 10),
+                panel_fg: Color::Rgb(178, 178, 184),
+                approval_title: Color::Rgb(160, 110, 68),
+                code_fg: Color::Rgb(165, 165, 172),
+                code_bg: Color::Rgb(4, 4, 6),
+                inline_code_fg: Color::Rgb(135, 132, 128),
+                inline_code_bg: Color::Rgb(16, 16, 20),
+                bullet: Color::Rgb(80, 80, 88),
             },
             ThemePreset::Solarized => ThemePalette {
-                prompt: Color::Rgb(42, 161, 152),
-                input_bg: Color::Rgb(7, 54, 66),
-                input_text: Color::Rgb(238, 232, 213),
-                muted_text: Color::Rgb(88, 110, 117),
-                highlight_fg: Color::Rgb(253, 246, 227),
-                highlight_bg: Color::Rgb(0, 95, 108),
-                activity_badge_fg: Color::Rgb(253, 246, 227),
-                activity_badge_bg: Color::Rgb(38, 139, 210),
-                activity_text: Color::Rgb(88, 224, 206),
-                status_text: Color::Rgb(88, 110, 117),
-                user_fg: Color::Rgb(253, 246, 227),
-                user_bg: Color::Rgb(7, 54, 66),
-                claude_label: Color::Rgb(255, 128, 48),
-                codex_label: Color::Rgb(42, 161, 152),
-                processing_label: Color::Rgb(88, 224, 206),
-                assistant_text: Color::Rgb(238, 232, 213),
-                assistant_processing_text: Color::Rgb(188, 190, 172),
-                system_text: Color::Rgb(88, 110, 117),
-                tool_icon: Color::Rgb(38, 139, 210),
-                tool_text: Color::Rgb(131, 148, 150),
-                error_label: Color::Rgb(220, 50, 47),
-                error_text: Color::Rgb(203, 75, 22),
-                banner_title: Color::Rgb(42, 161, 152),
-                panel_bg: Color::Rgb(0, 43, 54),
-                panel_fg: Color::Rgb(238, 232, 213),
-                approval_title: Color::Rgb(181, 137, 0),
-                code_fg: Color::Rgb(238, 232, 213),
-                code_bg: Color::Rgb(0, 43, 54),
-                inline_code_fg: Color::Rgb(211, 54, 130),
-                inline_code_bg: Color::Rgb(7, 54, 66),
-                bullet: Color::Rgb(38, 139, 210),
+                prompt: Color::Rgb(142, 142, 148),
+                input_bg: Color::Rgb(15, 15, 17),
+                input_text: Color::Rgb(190, 190, 195),
+                muted_text: Color::Rgb(60, 60, 65),
+                highlight_fg: Color::Rgb(212, 212, 216),
+                highlight_bg: Color::Rgb(35, 35, 40),
+                activity_badge_fg: Color::Rgb(212, 212, 216),
+                activity_badge_bg: Color::Rgb(46, 46, 52),
+                activity_text: Color::Rgb(122, 122, 130),
+                status_text: Color::Rgb(56, 56, 60),
+                user_fg: Color::Rgb(212, 212, 216),
+                user_bg: Color::Rgb(21, 21, 24),
+                claude_label: Color::Rgb(255, 102, 51),
+                codex_label: Color::Rgb(118, 118, 125),
+                processing_label: Color::Rgb(108, 108, 115),
+                assistant_text: Color::Rgb(186, 186, 192),
+                assistant_processing_text: Color::Rgb(132, 132, 140),
+                system_text: Color::Rgb(56, 56, 62),
+                tool_icon: Color::Rgb(82, 82, 90),
+                tool_text: Color::Rgb(92, 92, 100),
+                error_label: Color::Rgb(158, 58, 58),
+                error_text: Color::Rgb(162, 78, 68),
+                banner_title: Color::Rgb(152, 152, 158),
+                panel_bg: Color::Rgb(9, 9, 11),
+                panel_fg: Color::Rgb(186, 186, 192),
+                approval_title: Color::Rgb(162, 115, 72),
+                code_fg: Color::Rgb(172, 172, 180),
+                code_bg: Color::Rgb(5, 5, 7),
+                inline_code_fg: Color::Rgb(138, 135, 130),
+                inline_code_bg: Color::Rgb(17, 17, 21),
+                bullet: Color::Rgb(82, 82, 90),
             },
             ThemePreset::Aurora => ThemePalette {
-                prompt: Color::Rgb(141, 211, 199),
-                input_bg: Color::Rgb(22, 29, 33),
-                input_text: Color::Rgb(225, 234, 231),
-                muted_text: Color::Rgb(102, 121, 118),
-                highlight_fg: Color::Rgb(244, 250, 247),
-                highlight_bg: Color::Rgb(40, 58, 55),
-                activity_badge_fg: Color::Rgb(244, 250, 247),
-                activity_badge_bg: Color::Rgb(37, 122, 108),
-                activity_text: Color::Rgb(165, 233, 217),
-                status_text: Color::Rgb(102, 121, 118),
-                user_fg: Color::Rgb(242, 248, 245),
-                user_bg: Color::Rgb(27, 36, 39),
-                claude_label: Color::Rgb(255, 128, 48),
-                codex_label: Color::Rgb(99, 213, 180),
-                processing_label: Color::Rgb(141, 211, 199),
-                assistant_text: Color::Rgb(225, 234, 231),
-                assistant_processing_text: Color::Rgb(188, 204, 200),
-                system_text: Color::Rgb(102, 121, 118),
-                tool_icon: Color::Rgb(90, 170, 150),
-                tool_text: Color::Rgb(144, 160, 158),
-                error_label: Color::Rgb(220, 118, 118),
-                error_text: Color::Rgb(226, 160, 127),
-                banner_title: Color::Rgb(141, 211, 199),
-                panel_bg: Color::Rgb(18, 24, 27),
-                panel_fg: Color::Rgb(225, 234, 231),
-                approval_title: Color::Rgb(232, 195, 120),
-                code_fg: Color::Rgb(212, 224, 220),
-                code_bg: Color::Rgb(15, 20, 23),
-                inline_code_fg: Color::Rgb(229, 201, 152),
-                inline_code_bg: Color::Rgb(25, 33, 37),
-                bullet: Color::Rgb(90, 170, 150),
+                prompt: Color::Rgb(148, 148, 152),
+                input_bg: Color::Rgb(17, 17, 19),
+                input_text: Color::Rgb(192, 192, 196),
+                muted_text: Color::Rgb(62, 62, 66),
+                highlight_fg: Color::Rgb(215, 215, 218),
+                highlight_bg: Color::Rgb(36, 36, 40),
+                activity_badge_fg: Color::Rgb(215, 215, 218),
+                activity_badge_bg: Color::Rgb(50, 50, 56),
+                activity_text: Color::Rgb(128, 128, 135),
+                status_text: Color::Rgb(58, 58, 62),
+                user_fg: Color::Rgb(215, 215, 218),
+                user_bg: Color::Rgb(24, 24, 26),
+                claude_label: Color::Rgb(255, 102, 51),
+                codex_label: Color::Rgb(122, 122, 128),
+                processing_label: Color::Rgb(112, 112, 118),
+                assistant_text: Color::Rgb(190, 190, 195),
+                assistant_processing_text: Color::Rgb(135, 135, 142),
+                system_text: Color::Rgb(58, 58, 64),
+                tool_icon: Color::Rgb(88, 88, 95),
+                tool_text: Color::Rgb(98, 98, 105),
+                error_label: Color::Rgb(162, 68, 68),
+                error_text: Color::Rgb(168, 82, 72),
+                banner_title: Color::Rgb(155, 155, 160),
+                panel_bg: Color::Rgb(11, 11, 13),
+                panel_fg: Color::Rgb(190, 190, 195),
+                approval_title: Color::Rgb(168, 122, 78),
+                code_fg: Color::Rgb(175, 175, 182),
+                code_bg: Color::Rgb(7, 7, 9),
+                inline_code_fg: Color::Rgb(142, 140, 135),
+                inline_code_bg: Color::Rgb(19, 19, 23),
+                bullet: Color::Rgb(88, 88, 95),
             },
             ThemePreset::Ember => ThemePalette {
-                prompt: Color::Rgb(237, 165, 120),
-                input_bg: Color::Rgb(38, 32, 29),
-                input_text: Color::Rgb(242, 232, 220),
-                muted_text: Color::Rgb(140, 120, 106),
-                highlight_fg: Color::Rgb(255, 244, 232),
-                highlight_bg: Color::Rgb(78, 60, 50),
-                activity_badge_fg: Color::Rgb(255, 244, 232),
-                activity_badge_bg: Color::Rgb(176, 93, 58),
-                activity_text: Color::Rgb(245, 190, 152),
-                status_text: Color::Rgb(140, 120, 106),
-                user_fg: Color::Rgb(255, 244, 232),
-                user_bg: Color::Rgb(47, 38, 34),
-                claude_label: Color::Rgb(255, 128, 48),
-                codex_label: Color::Rgb(110, 185, 193),
-                processing_label: Color::Rgb(237, 165, 120),
-                assistant_text: Color::Rgb(242, 232, 220),
-                assistant_processing_text: Color::Rgb(208, 191, 177),
-                system_text: Color::Rgb(140, 120, 106),
-                tool_icon: Color::Rgb(194, 127, 95),
-                tool_text: Color::Rgb(176, 152, 134),
-                error_label: Color::Rgb(227, 108, 95),
-                error_text: Color::Rgb(226, 150, 118),
-                banner_title: Color::Rgb(237, 165, 120),
-                panel_bg: Color::Rgb(30, 24, 21),
-                panel_fg: Color::Rgb(242, 232, 220),
-                approval_title: Color::Rgb(232, 187, 117),
-                code_fg: Color::Rgb(230, 214, 198),
-                code_bg: Color::Rgb(24, 19, 17),
-                inline_code_fg: Color::Rgb(245, 203, 145),
-                inline_code_bg: Color::Rgb(40, 32, 29),
-                bullet: Color::Rgb(194, 127, 95),
+                prompt: Color::Rgb(152, 152, 155),
+                input_bg: Color::Rgb(18, 18, 20),
+                input_text: Color::Rgb(195, 195, 198),
+                muted_text: Color::Rgb(65, 65, 68),
+                highlight_fg: Color::Rgb(218, 218, 220),
+                highlight_bg: Color::Rgb(38, 38, 42),
+                activity_badge_fg: Color::Rgb(218, 218, 220),
+                activity_badge_bg: Color::Rgb(52, 52, 58),
+                activity_text: Color::Rgb(132, 132, 138),
+                status_text: Color::Rgb(60, 60, 64),
+                user_fg: Color::Rgb(218, 218, 220),
+                user_bg: Color::Rgb(25, 25, 28),
+                claude_label: Color::Rgb(255, 102, 51),
+                codex_label: Color::Rgb(125, 125, 130),
+                processing_label: Color::Rgb(115, 115, 120),
+                assistant_text: Color::Rgb(192, 192, 198),
+                assistant_processing_text: Color::Rgb(138, 138, 145),
+                system_text: Color::Rgb(60, 60, 66),
+                tool_icon: Color::Rgb(92, 92, 98),
+                tool_text: Color::Rgb(100, 100, 108),
+                error_label: Color::Rgb(165, 72, 72),
+                error_text: Color::Rgb(170, 88, 78),
+                banner_title: Color::Rgb(158, 158, 162),
+                panel_bg: Color::Rgb(12, 12, 14),
+                panel_fg: Color::Rgb(192, 192, 198),
+                approval_title: Color::Rgb(170, 125, 82),
+                code_fg: Color::Rgb(178, 178, 185),
+                code_bg: Color::Rgb(8, 8, 10),
+                inline_code_fg: Color::Rgb(145, 142, 138),
+                inline_code_bg: Color::Rgb(20, 20, 24),
+                bullet: Color::Rgb(92, 92, 98),
             },
         }
     }
@@ -791,10 +791,14 @@ struct App {
     run_target: String,
     last_tool_event: String,
     finished_at: Option<Instant>,
+    finished_elapsed_secs: u64,
+    finished_provider_name: String,
     agent_chars: HashMap<Provider, usize>,
     agent_verb_idx: HashMap<Provider, usize>,
     agent_started_at: HashMap<Provider, Instant>,
     agent_tool_event: HashMap<Provider, String>,
+    /// Recent activity log entries shown in the activity area during runs.
+    activity_log: std::collections::VecDeque<String>,
 
     last_status: String,
     session_id: String,
@@ -857,10 +861,13 @@ impl App {
             run_target: String::new(),
             last_tool_event: String::new(),
             finished_at: None,
+            finished_elapsed_secs: 0,
+            finished_provider_name: String::new(),
             agent_chars: HashMap::new(),
             agent_verb_idx: HashMap::new(),
             agent_started_at: HashMap::new(),
             agent_tool_event: HashMap::new(),
+            activity_log: std::collections::VecDeque::new(),
             last_status: "ready".to_string(),
             session_id: default_session_id(),
             memory,
@@ -881,6 +888,7 @@ impl App {
 
     fn start_running_state(&mut self, target: String) {
         self.running = true;
+        self.finished_at = None;
         self.run_started_at = Some(Instant::now());
         self.run_target = target;
     }
@@ -896,6 +904,7 @@ impl App {
         self.agent_verb_idx.clear();
         self.agent_started_at.clear();
         self.agent_tool_event.clear();
+        self.activity_log.clear();
         self.active_provider = None;
         self.run_started_at = None;
         self.run_target.clear();
@@ -992,29 +1001,26 @@ impl App {
         &self.render_cache.lines
     }
 
-    /// Return the index of the first currently-streaming entry, or entries.len() if none.
-    fn first_streaming_entry_idx(&self) -> usize {
-        if !self.running {
-            return self.entries.len();
-        }
-        let mut min_idx = self.entries.len();
-        if let Some(idx) = self.assistant_idx {
-            min_idx = min_idx.min(idx);
-        }
-        for &idx in self.agent_entries.values() {
-            min_idx = min_idx.min(idx);
-        }
-        min_idx
-    }
-
     /// Render only the entries that are stable (not currently being streamed).
+    /// This includes Tool/System/Error entries that appear after streaming
+    /// Assistant entries, so the user can see tool activity in real-time.
     fn stable_log_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let stable_count = self.first_streaming_entry_idx();
-        if stable_count == 0 {
+        if self.entries.is_empty() {
             return Vec::new();
         }
-        // Reuse render_entries_lines logic but only up to stable_count entries.
-        self.render_entries_lines_range(width, 0, stable_count)
+        // Collect indices of streaming assistant entries to skip.
+        let mut streaming_indices = std::collections::HashSet::new();
+        if let Some(idx) = self.assistant_idx {
+            streaming_indices.insert(idx);
+        }
+        for &idx in self.agent_entries.values() {
+            streaming_indices.insert(idx);
+        }
+        if streaming_indices.is_empty() {
+            // No streaming entries; everything is stable.
+            return self.render_entries_lines(width);
+        }
+        self.render_entries_lines_filtered(width, &streaming_indices)
     }
     fn update_viewport(&mut self, width: u16, height: u16) {
         self.viewport_width = width.max(1);
@@ -1049,7 +1055,18 @@ impl App {
             return 1;
         }
         let (_, end_y) = input_cursor_position(&self.input, self.input.len(), width, prompt_width);
-        end_y.saturating_add(1).clamp(1, 6)
+        end_y.saturating_add(1).max(1)
+    }
+
+    /// Returns the vertical scroll offset needed to keep the cursor visible
+    /// within the input area of the given `visible_rows` height.
+    fn input_scroll_offset(&self, width: u16, prompt_width: u16, visible_rows: u16) -> u16 {
+        if self.input.is_empty() {
+            return 0;
+        }
+        let (_, cursor_y) = input_cursor_position(&self.input, self.cursor, width, prompt_width);
+        // Scroll so that the cursor line is always within the visible area.
+        cursor_y.saturating_sub(visible_rows.saturating_sub(1))
     }
 
     fn handle_paste_event(&mut self, raw: &str) {
@@ -1450,6 +1467,8 @@ impl App {
                         processed_any = true;
                         render_changed = true;
                         let elapsed_secs = self.running_elapsed_secs();
+                        self.finished_elapsed_secs = elapsed_secs;
+                        self.finished_provider_name = self.primary_provider.as_str().to_string();
                         if self.assistant_idx.is_some() {
                             if !self.stream_had_chunk {
                                 let final_text = final_text.trim();
@@ -1498,7 +1517,7 @@ impl App {
                             }
                         }
                         self.clear_running_state();
-                        self.finished_at = None;
+                        self.finished_at = Some(Instant::now());
                         if self.last_tool_event.is_empty() {
                             self.last_tool_event = "run completed".to_string();
                         }
@@ -1516,9 +1535,12 @@ impl App {
                         }
                         self.last_tool_event = msg.clone();
                         self.last_status = format!("tool: {}", truncate(&msg, 48));
-                        // Push tool events to transcript so the user can see
-                        // what tools the agent is calling in real-time.
-                        self.push_entry(EntryKind::Tool, msg);
+                        // Tool events only go to the live activity area (not transcript).
+                        const MAX_ACTIVITY_LOG: usize = 5;
+                        self.activity_log.push_back(msg);
+                        while self.activity_log.len() > MAX_ACTIVITY_LOG {
+                            self.activity_log.pop_front();
+                        }
                         render_changed = true;
                     }
                     Ok(WorkerEvent::Progress(msg)) => {
@@ -1531,6 +1553,12 @@ impl App {
                             self.agent_tool_event.insert(ap, msg.clone());
                         }
                         self.last_tool_event = msg.clone();
+                        // Add progress to activity log.
+                        const MAX_ACTIVITY_LOG_P: usize = 5;
+                        self.activity_log.push_back(msg.clone());
+                        while self.activity_log.len() > MAX_ACTIVITY_LOG_P {
+                            self.activity_log.pop_front();
+                        }
                         self.last_status = format!("progress: {}", truncate(&msg, 48));
                         // Progress events only update the spinner area;
                         // they are NOT written to the transcript.
@@ -2799,6 +2827,242 @@ impl App {
                             continue;
                         }
 
+                        let (text, style) = match row {
+                            StartupBannerRow::Title(value) => (
+                                value.to_string(),
+                                palette.title_style(),
+                            ),
+                            StartupBannerRow::Agents(value) => {
+                                (value.to_string(), palette.secondary_style())
+                            }
+                            StartupBannerRow::Cwd(value) => {
+                                (value.to_string(), palette.secondary_style())
+                            }
+                            StartupBannerRow::Keys(value) => {
+                                (value.to_string(), palette.muted_style())
+                            }
+                        };
+                        lines.push(Line::from(vec![Span::styled(text, style)]));
+                        if !next_is_banner {
+                            lines.push(Line::from(""));
+                        }
+                        continue;
+                    }
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("[sys] {}", entry.text),
+                        palette.secondary_style(),
+                    )]));
+                }
+                EntryKind::Tool => {
+                    let is_tool_call = entry.text.contains("calling tool:")
+                        || entry.text.contains("tool:")
+                        || entry.text.contains("exec:");
+                    let is_tool_done =
+                        entry.text.contains("finished:") || entry.text.contains("exec done");
+                    let (icon, icon_style, text_style) = if is_tool_call {
+                        (
+                            "  \u{25B6} ",
+                            Style::default()
+                                .fg(palette.tool_icon)
+                                .add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(palette.activity_text)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else if is_tool_done {
+                        (
+                            "  \u{2714} ",
+                            Style::default().fg(palette.processing_label),
+                            Style::default().fg(palette.processing_label),
+                        )
+                    } else {
+                        (
+                            "  \u{25B8} ",
+                            Style::default()
+                                .fg(palette.tool_icon)
+                                .add_modifier(Modifier::BOLD),
+                            Style::default().fg(palette.tool_text),
+                        )
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(icon, icon_style),
+                        Span::styled(entry.text.clone(), text_style),
+                    ]));
+                }
+                EntryKind::Error => {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "[error] ",
+                            Style::default()
+                                .fg(palette.error_label)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(entry.text.clone(), Style::default().fg(palette.error_text)),
+                    ]));
+                }
+            }
+            lines.push(Line::from(""));
+        }
+
+        lines
+    }
+
+    /// Render all entries except those at the given indices (streaming assistant entries).
+    fn render_entries_lines_filtered(&self, width: u16, skip_indices: &std::collections::HashSet<usize>) -> Vec<Line<'static>> {
+        let mut lines = Vec::<Line>::new();
+        let palette = self.theme.palette();
+
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if skip_indices.contains(&idx) {
+                continue;
+            }
+            let entry_provider =
+                extract_agent_name(&entry.text).and_then(|n| provider_from_name(&n));
+            let is_current_entry =
+                self.assistant_idx == Some(idx) || self.agent_entries.values().any(|&i| i == idx);
+            let is_processing =
+                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
+            if matches!(entry.kind, EntryKind::Assistant) && idx > 0 {
+                lines.push(Line::from(""));
+            }
+            match entry.kind {
+                EntryKind::User => {
+                    let parts: Vec<&str> = entry.text.split('\n').collect();
+                    let w = width as usize;
+                    let user_style = Style::default()
+                        .fg(palette.user_fg)
+                        .bg(palette.user_bg)
+                        .add_modifier(Modifier::BOLD);
+                    for part in parts {
+                        let content = if part.is_empty() { " " } else { part };
+                        let mut text = format!(" {} ", content);
+                        if w > 0 {
+                            let text_w = UnicodeWidthStr::width(text.as_str());
+                            if text_w < w {
+                                text.push_str(&" ".repeat(w - text_w));
+                            }
+                        }
+                        lines.push(Line::from(vec![Span::styled(text, user_style)]));
+                    }
+                }
+                EntryKind::Assistant => {
+                    let provider = entry_provider.unwrap_or(self.primary_provider);
+                    let provider_color = match provider {
+                        Provider::Claude => palette.claude_label,
+                        Provider::Codex => palette.codex_label,
+                    };
+                    let label = provider.as_str().to_string();
+                    let label_style = if is_processing {
+                        Style::default()
+                            .fg(palette.processing_label)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(provider_color)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    let cleaned_text = cleaned_assistant_text(entry);
+                    let raw_text = if cleaned_text.trim().is_empty() {
+                        String::new()
+                    } else {
+                        cleaned_text
+                    };
+                    let base_style = if is_processing {
+                        palette.body_processing_style()
+                    } else {
+                        palette.body_style()
+                    };
+                    let max_label_width = Provider::all()
+                        .iter()
+                        .map(|p| UnicodeWidthStr::width(p.as_str()))
+                        .max()
+                        .unwrap_or(6);
+                    let label_col_width = max_label_width + 2;
+                    let padded_label = format!("{:width$}", label, width = max_label_width);
+                    let label_sep = format!("{} \u{2502}", padded_label);
+                    let indent = " ".repeat(label_col_width.saturating_sub(1));
+                    let indent_sep = format!("{}\u{2502}", indent);
+                    let content_width = (width as usize).saturating_sub(label_col_width + 1);
+                    if raw_text.is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::styled(label_sep.clone(), label_style),
+                        ]));
+                    } else {
+                        let md_lines = render_markdown(&raw_text, base_style, palette);
+                        for (i, md_line) in md_lines.into_iter().enumerate() {
+                            let wrapped = wrap_spans(md_line, content_width);
+                            for (wi, w_line) in wrapped.into_iter().enumerate() {
+                                let mut spans = if i == 0 && wi == 0 {
+                                    vec![
+                                        Span::styled(label_sep.clone(), label_style),
+                                        Span::raw(" "),
+                                    ]
+                                } else {
+                                    vec![
+                                        Span::styled(indent_sep.clone(), label_style),
+                                        Span::raw(" "),
+                                    ]
+                                };
+                                spans.extend(w_line);
+                                lines.push(Line::from(spans));
+                            }
+                        }
+                    }
+                }
+                EntryKind::System => {
+                    if let Some(row) = parse_startup_banner_row(&entry.text) {
+                        let prev_non_skipped = (0..idx).rev().find(|i| !skip_indices.contains(i));
+                        let prev_is_banner = prev_non_skipped
+                            .and_then(|i| self.entries.get(i))
+                            .is_some_and(is_startup_banner_entry);
+                        let next_non_skipped = (idx + 1..self.entries.len()).find(|i| !skip_indices.contains(i));
+                        let next_is_banner = next_non_skipped
+                            .and_then(|i| self.entries.get(i))
+                            .is_some_and(is_startup_banner_entry);
+
+                        let border_style = palette.panel_border_style();
+                        let outer = banner_card_outer_width(width);
+                        if outer >= 6 {
+                            let inner = outer.saturating_sub(2);
+                            let content_width = inner.saturating_sub(2);
+                            if !prev_is_banner {
+                                lines.push(Line::from(vec![
+                                    Span::styled("┌".to_string(), border_style),
+                                    Span::styled("─".repeat(inner), border_style),
+                                    Span::styled("┐".to_string(), border_style),
+                                ]));
+                            }
+                            let (raw_text, content_style) = match row {
+                                StartupBannerRow::Title(value) => (
+                                    format!(" {value}"),
+                                    palette.title_style(),
+                                ),
+                                StartupBannerRow::Agents(value) => {
+                                    (format!(" {value}"), palette.secondary_style())
+                                }
+                                StartupBannerRow::Cwd(value) => {
+                                    (format!(" {value}"), palette.secondary_style())
+                                }
+                                StartupBannerRow::Keys(value) => {
+                                    (format!(" {value}"), palette.muted_style())
+                                }
+                            };
+                            let content = fit_to_display_width(&raw_text, content_width);
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ".to_string(), border_style),
+                                Span::styled(content, content_style),
+                                Span::styled(" │".to_string(), border_style),
+                            ]));
+                            if !next_is_banner {
+                                lines.push(Line::from(vec![
+                                    Span::styled("└".to_string(), border_style),
+                                    Span::styled("─".repeat(inner), border_style),
+                                    Span::styled("┘".to_string(), border_style),
+                                ]));
+                                lines.push(Line::from(""));
+                            }
+                            continue;
+                        }
                         let (text, style) = match row {
                             StartupBannerRow::Title(value) => (
                                 value.to_string(),
