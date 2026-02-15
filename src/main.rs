@@ -26,7 +26,7 @@ use app::{EntryKind, LogEntry, Provider};
 
 pub(crate) use orchestrator::execute_line;
 
-const APP_VERSION: &str = "0.2.2";
+const APP_VERSION: &str = "0.2.3";
 // Breathing dot indicator (kept for potential future use).
 #[allow(dead_code)]
 const SPINNER: &[&str] = &["●"];
