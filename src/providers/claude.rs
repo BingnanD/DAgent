@@ -61,8 +61,7 @@ fn run_stream_once(
         .arg("--permission-mode")
         .arg(permission_mode);
     add_allowed_tools_arg(&mut cmd, allowed_tools);
-    cmd.arg("-p")
-        .arg(prompt);
+    cmd.arg("-p").arg(prompt);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -89,17 +88,20 @@ fn run_stream_once(
         }
         fallback_lines.push(line.clone());
         if let Some(tool_info) = extract_tool_use(&line) {
-            let _ = tx.send(WorkerEvent::Tool(tool_info));
+            let _ = tx.send(WorkerEvent::Tool {
+                provider: Some(provider),
+                msg: tool_info,
+            });
         } else if let Some(progress) = extract_progress_event(&line) {
-            let _ = tx.send(WorkerEvent::Progress(progress));
+            let _ = tx.send(WorkerEvent::Progress {
+                provider,
+                msg: progress,
+            });
         }
         if let Some(chunk) = extract_delta_text(&line) {
             if !chunk.trim().is_empty() {
                 emitted = true;
-                let _ = tx.send(WorkerEvent::AgentChunk {
-                    provider,
-                    chunk,
-                });
+                let _ = tx.send(WorkerEvent::AgentChunk { provider, chunk });
             }
         }
     }
@@ -108,11 +110,15 @@ fn run_stream_once(
         .wait()
         .map_err(|e| format!("claude fallback wait failed: {e}"))?;
     if !status.success() {
-        let stderr_bytes = child.stderr.take().map(|mut s| {
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut s, &mut buf).ok();
-            buf
-        }).unwrap_or_default();
+        let stderr_bytes = child
+            .stderr
+            .take()
+            .map(|mut s| {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut s, &mut buf).ok();
+                buf
+            })
+            .unwrap_or_default();
         return Err(format!(
             "claude fallback failed: {}",
             String::from_utf8_lossy(&stderr_bytes).trim()
@@ -150,8 +156,7 @@ pub(crate) fn run_stream(
         .arg("--permission-mode")
         .arg(&permission_mode);
     add_allowed_tools_arg(&mut cmd, allowed_tools.as_deref());
-    cmd.arg("-p")
-        .arg(prompt);
+    cmd.arg("-p").arg(prompt);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -183,9 +188,15 @@ pub(crate) fn run_stream(
             saw_quota_error = true;
         }
         if let Some(tool_info) = extract_tool_use(&line) {
-            let _ = tx.send(WorkerEvent::Tool(tool_info));
+            let _ = tx.send(WorkerEvent::Tool {
+                provider: Some(provider),
+                msg: tool_info,
+            });
         } else if let Some(progress) = extract_progress_event(&line) {
-            let _ = tx.send(WorkerEvent::Progress(progress));
+            let _ = tx.send(WorkerEvent::Progress {
+                provider,
+                msg: progress,
+            });
         }
         if let Some(chunk) = extract_delta_text(&line) {
             if !chunk.trim().is_empty() {
@@ -236,17 +247,33 @@ pub(crate) fn run_stream(
     }
 
     let mut mode_for_fallback = permission_mode.clone();
-    let result = run_stream_once(provider, prompt, &mode_for_fallback, allowed_tools.as_deref(), tx, child_pids);
+    let result = run_stream_once(
+        provider,
+        prompt,
+        &mode_for_fallback,
+        allowed_tools.as_deref(),
+        tx,
+        child_pids,
+    );
     match result {
-        Ok(text) => return Ok(text),
+        Ok(text) => Ok(text),
         Err(ref e) if mode_for_fallback == "bypassPermissions" && is_root_bypass_error(e) => {
             mode_for_fallback = "acceptEdits".to_string();
-            let _ = tx.send(WorkerEvent::Tool(
-                "claude bypassPermissions blocked under root; retrying with acceptEdits".to_string(),
-            ));
-            return run_stream_once(provider, prompt, &mode_for_fallback, allowed_tools.as_deref(), tx, child_pids);
+            let _ = tx.send(WorkerEvent::Tool {
+                provider: Some(provider),
+                msg: "claude bypassPermissions blocked under root; retrying with acceptEdits"
+                    .to_string(),
+            });
+            run_stream_once(
+                provider,
+                prompt,
+                &mode_for_fallback,
+                allowed_tools.as_deref(),
+                tx,
+                child_pids,
+            )
         }
-        Err(e) => return Err(e),
+        Err(e) => Err(e),
     }
 }
 
@@ -295,8 +322,8 @@ fn extract_tool_use(line: &str) -> Option<String> {
                 "content_block_start" | "message_start" => {
                     // These are progress-only events; handled by extract_progress_event.
                     // content_block_start with tool_use is an early hint; the full
-                    // tool_use object (with input details) arrives later and goes to
-                    // the transcript via the top-level "tool_use"/"tool" branch.
+                    // tool_use object (with input details) arrives later and is surfaced
+                    // via WorkerEvent::Tool in the live activity area.
                     None
                 }
                 "message_stop" | "message_delta" => None,
@@ -348,8 +375,8 @@ fn extract_tool_use(line: &str) -> Option<String> {
     }
 }
 
-/// Extract progress-only events (thinking, finished, system) that should update
-/// the spinner but NOT be written to the transcript.
+/// Extract progress events (thinking, finished, system) for spinner updates
+/// and provider-specific transcript progress lines.
 fn extract_progress_event(line: &str) -> Option<String> {
     let value = parse_json_line(line)?;
     let event_type = value.get("type").and_then(Value::as_str)?;

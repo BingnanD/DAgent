@@ -9,6 +9,7 @@ const RECENT_LIMIT: usize = 2;
 const SEARCH_LIMIT: usize = 8;
 const CONTEXT_CHAR_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 500;
+const MAX_PREVIEW_CHARS: usize = 180;
 
 #[derive(Debug, Clone)]
 struct MemoryMessage {
@@ -120,7 +121,7 @@ impl MemoryStore {
     pub(crate) fn list_session_lines(&self, session_id: &str, limit: usize) -> Result<Vec<String>> {
         let mut out = Vec::new();
         for item in self.recent_messages(session_id, limit.max(1))? {
-            if let Some(line) = format_line(&item) {
+            if let Some(line) = format_preview_line(&item) {
                 out.push(format!("#{} {}", item.id, line));
             }
         }
@@ -142,7 +143,7 @@ impl MemoryStore {
 
         let mut out = Vec::new();
         for item in items {
-            if let Some(line) = format_line(&item) {
+            if let Some(line) = format_preview_line(&item) {
                 out.push(format!("#{} {}", item.id, line));
             }
         }
@@ -346,6 +347,7 @@ fn memory_file_path() -> PathBuf {
 
 fn normalize_query(input: &str) -> Option<String> {
     let mut terms = Vec::new();
+    let mut seen = HashSet::new();
     for t in input
         .split(|c: char| !c.is_alphanumeric())
         .map(|s| s.trim().to_lowercase())
@@ -353,7 +355,7 @@ fn normalize_query(input: &str) -> Option<String> {
         if t.len() < 2 {
             continue;
         }
-        if terms.contains(&t) {
+        if !seen.insert(t.clone()) {
             continue;
         }
         terms.push(t);
@@ -373,28 +375,143 @@ fn squash_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn squash_block_whitespace(text: &str) -> String {
+    let mut lines = Vec::new();
+    for raw in text.lines() {
+        let line = squash_whitespace(raw.trim());
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+
+    if lines.is_empty() {
+        squash_whitespace(text.trim())
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn clip_chars(mut text: String, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text;
+    }
+    text = text.chars().take(limit).collect::<String>();
+    text.push_str("...");
+    text
+}
+
+fn prefix_multiline(prefix: &str, text: &str) -> String {
+    let mut out = String::new();
+    let mut lines = text.split('\n');
+    let first = lines.next().unwrap_or_default();
+    out.push_str(prefix);
+    out.push_str(first);
+
+    let indent = " ".repeat(prefix.chars().count());
+    for line in lines {
+        out.push('\n');
+        out.push_str(&indent);
+        out.push_str(line);
+    }
+    out
+}
+
+fn message_prefix(item: &MemoryMessage) -> String {
+    match item.role.as_str() {
+        "user" => "user: ".to_string(),
+        "assistant" => {
+            if let Some(agent) = &item.agent {
+                format!("assistant({agent}): ")
+            } else {
+                "assistant: ".to_string()
+            }
+        }
+        "system" => "system: ".to_string(),
+        _ => format!("{}: ", item.role),
+    }
+}
+
 fn format_line(item: &MemoryMessage) -> Option<String> {
-    let text = squash_whitespace(item.content.trim());
+    let text = squash_block_whitespace(item.content.trim());
     if text.is_empty() {
         return None;
     }
 
-    let mut clipped = text;
-    if clipped.chars().count() > MAX_LINE_CHARS {
-        clipped = clipped.chars().take(MAX_LINE_CHARS).collect::<String>();
-        clipped.push_str("...");
+    let clipped = clip_chars(text, MAX_LINE_CHARS);
+    let prefix = message_prefix(item);
+    Some(prefix_multiline(&prefix, &clipped))
+}
+
+fn format_preview_line(item: &MemoryMessage) -> Option<String> {
+    let block = squash_block_whitespace(item.content.trim());
+    if block.is_empty() {
+        return None;
     }
 
-    match item.role.as_str() {
-        "user" => Some(format!("user: {clipped}")),
-        "assistant" => {
-            if let Some(agent) = &item.agent {
-                Some(format!("assistant({agent}): {clipped}"))
-            } else {
-                Some(format!("assistant: {clipped}"))
-            }
-        }
-        "system" => Some(format!("system: {clipped}")),
-        _ => Some(format!("{}: {clipped}", item.role)),
+    let compact = squash_whitespace(&block.replace('\n', " "));
+    if compact.is_empty() {
+        return None;
+    }
+
+    let clipped = clip_chars(compact, MAX_PREVIEW_CHARS);
+    Some(format!("{}{}", message_prefix(item), clipped))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_line_keeps_block_structure_with_indent() {
+        let item = MemoryMessage {
+            id: 1,
+            role: "assistant".to_string(),
+            agent: Some("codex".to_string()),
+            content: "first line\n\n  second   line ".to_string(),
+        };
+
+        let line = format_line(&item).expect("line should exist");
+        assert_eq!(
+            line,
+            "assistant(codex): first line\n                  second line"
+        );
+    }
+
+    #[test]
+    fn format_line_clips_and_marks_ellipsis() {
+        let long = "x".repeat(MAX_LINE_CHARS + 5);
+        let item = MemoryMessage {
+            id: 2,
+            role: "user".to_string(),
+            agent: None,
+            content: long,
+        };
+
+        let line = format_line(&item).expect("line should exist");
+        assert!(line.starts_with("user: "));
+        assert!(line.ends_with("..."));
+    }
+
+    #[test]
+    fn format_preview_line_flattens_block_and_truncates() {
+        let item = MemoryMessage {
+            id: 3,
+            role: "assistant".to_string(),
+            agent: Some("claude".to_string()),
+            content: "first line\n\n  second   line".to_string(),
+        };
+
+        let line = format_preview_line(&item).expect("line should exist");
+        assert_eq!(line, "assistant(claude): first line second line");
+
+        let long = MemoryMessage {
+            id: 4,
+            role: "user".to_string(),
+            agent: None,
+            content: "x".repeat(MAX_PREVIEW_CHARS + 8),
+        };
+        let clipped = format_preview_line(&long).expect("line should exist");
+        assert!(clipped.starts_with("user: "));
+        assert!(clipped.ends_with("..."));
     }
 }

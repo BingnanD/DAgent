@@ -10,46 +10,72 @@ use crate::{input_cursor_position, providers_label, truncate};
 
 const PANEL_PADDING_X: u16 = 1;
 const PANEL_PADDING_Y: u16 = 0;
-const PANEL_HORIZONTAL_INSET: u16 = 2 + PANEL_PADDING_X * 2;
-const PANEL_VERTICAL_INSET: u16 = 2 + PANEL_PADDING_Y * 2;
+const INPUT_HORIZONTAL_INSET: u16 = 2 + PANEL_PADDING_X * 2;
+const INPUT_VERTICAL_INSET: u16 = 2 + PANEL_PADDING_Y * 2;
+const ACTIVITY_HORIZONTAL_INSET: u16 = 0;
+const ACTIVITY_VERTICAL_INSET: u16 = 0;
+const TRANSCRIPT_ACTIVITY_GAP_ROWS: u16 = 1;
+const MAX_SPINNER_ROWS_PER_AGENT: u16 = 6;
 
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let frame_area = f.area();
     let theme = app.theme_palette();
     let prompt_prefix = "> ";
     let prompt_width = UnicodeWidthStr::width(prompt_prefix) as u16;
-    let composer_width = frame_area.width.saturating_sub(PANEL_HORIZONTAL_INSET).max(1);
+    let composer_width = frame_area
+        .width
+        .saturating_sub(INPUT_HORIZONTAL_INSET)
+        .max(1);
 
     let show_finished = app.finished_at.is_some() && !app.running;
-    let activity_rows = if app.running {
-        let spinner_rows = app.agent_entries.len().max(1) as u16;
-        let log_rows = app.activity_log.len() as u16;
+    let activity_content_rows = if app.running {
+        let spinner_agents = app.agent_entries.len().max(1) as u16;
+        let spinner_rows = spinner_agents;
+        let max_rows_by_agent = spinner_agents.saturating_mul(MAX_SPINNER_ROWS_PER_AGENT);
+        let max_log_rows = max_rows_by_agent.saturating_sub(spinner_rows) as usize;
+        let log_rows = app.activity_log.len().min(max_log_rows) as u16;
         // Cap so the activity area never exceeds ~40% of the terminal.
-        let max_activity = (frame_area.height * 2 / 5).max(3);
+        // Reserve panel insets so content rows remain fully visible.
+        let max_activity = (frame_area.height * 2 / 5)
+            .saturating_sub(ACTIVITY_VERTICAL_INSET)
+            .max(3);
         (spinner_rows + log_rows).min(max_activity)
     } else if show_finished {
         1
     } else {
         0
     };
-    let activity_h = activity_rows;
+    let activity_h = if activity_content_rows > 0 {
+        activity_content_rows.saturating_add(ACTIVITY_VERTICAL_INSET)
+    } else {
+        0
+    };
+    let transcript_activity_gap_h = if activity_h > 0 {
+        TRANSCRIPT_ACTIVITY_GAP_ROWS
+    } else {
+        0
+    };
     let hints_h = if app.inline_hints().is_empty() {
         0
     } else {
-        1u16.saturating_add(PANEL_VERTICAL_INSET)
+        1u16.saturating_add(INPUT_VERTICAL_INSET)
     };
     let status_h: u16 = 1;
-    let fixed_rows = activity_h + hints_h + status_h;
+    let fixed_rows = transcript_activity_gap_h + activity_h + hints_h + status_h;
     let max_input_height = frame_area.height.saturating_sub(fixed_rows).max(3);
     let input_height = app
         .input_height(composer_width, prompt_width)
-        .saturating_add(PANEL_VERTICAL_INSET)
+        .saturating_add(INPUT_VERTICAL_INSET)
         .min(max_input_height);
     let prompt_style = theme.prompt_style();
     let input_lines = build_input_lines(app, prompt_prefix, prompt_style, theme, composer_width);
 
     // Composer-only viewport: transcript is appended above via insert_before.
+    // Keep one blank separator row between transcript and activity/spinner panel.
     let mut constraints = Vec::new();
+    if transcript_activity_gap_h > 0 {
+        constraints.push(Constraint::Length(transcript_activity_gap_h));
+    }
     if activity_h > 0 {
         constraints.push(Constraint::Length(activity_h));
     }
@@ -65,6 +91,9 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         .split(frame_area);
 
     let mut section_idx = 0usize;
+    if transcript_activity_gap_h > 0 {
+        section_idx += 1;
+    }
     let activity_chunk = if activity_h > 0 {
         let c = chunks[section_idx];
         section_idx += 1;
@@ -85,15 +114,17 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 
     // Real-time activity area between transcript and composer.
     if let Some(area) = activity_chunk {
-        let activity_lines = build_activity_lines(app, theme);
+        let activity_content_width = area.width.saturating_sub(ACTIVITY_HORIZONTAL_INSET).max(1);
+        let activity_lines =
+            build_activity_lines(app, theme, activity_content_width, activity_content_rows);
         let activity_panel = Paragraph::new(Text::from(activity_lines))
-            .style(theme.panel_surface_style())
+            .style(activity_surface_style(theme))
             .wrap(Wrap { trim: false });
         f.render_widget(activity_panel, area);
     }
 
     // Input area
-    let visible_rows = input_height.saturating_sub(PANEL_VERTICAL_INSET).max(1);
+    let visible_rows = input_height.saturating_sub(INPUT_VERTICAL_INSET).max(1);
     let input_scroll = app.input_scroll_offset(composer_width, prompt_width, visible_rows);
     let input = Paragraph::new(Text::from(input_lines))
         .style(theme.input_surface_style())
@@ -107,8 +138,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
                     PANEL_PADDING_X,
                     PANEL_PADDING_Y,
                     PANEL_PADDING_Y,
-                ))
-                .style(theme.panel_surface_style()),
+                )),
         )
         .scroll((input_scroll, 0));
     f.render_widget(input, input_chunk);
@@ -126,11 +156,11 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Normal) {
         let content_width = input_chunk
             .width
-            .saturating_sub(PANEL_HORIZONTAL_INSET)
+            .saturating_sub(INPUT_HORIZONTAL_INSET)
             .max(1);
         let content_height = input_chunk
             .height
-            .saturating_sub(PANEL_VERTICAL_INSET)
+            .saturating_sub(INPUT_VERTICAL_INSET)
             .max(1);
         let (cx, cy) = input_cursor_position(&app.input, app.cursor, content_width, prompt_width);
         let visible_cy = cy.saturating_sub(input_scroll);
@@ -166,18 +196,26 @@ pub(super) fn draw_exit(f: &mut Frame, app: &App) {
 }
 
 fn panel_block(theme: ThemePalette, title: &str) -> Block<'static> {
+    panel_block_with_padding(theme, title, PANEL_PADDING_X, PANEL_PADDING_Y)
+}
+
+fn panel_block_with_padding(
+    theme: ThemePalette,
+    title: &str,
+    padding_x: u16,
+    padding_y: u16,
+) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.panel_border_style())
         .title(Span::styled(format!(" {} ", title), theme.title_style()))
-        .padding(Padding::new(
-            PANEL_PADDING_X,
-            PANEL_PADDING_X,
-            PANEL_PADDING_Y,
-            PANEL_PADDING_Y,
-        ))
+        .padding(Padding::new(padding_x, padding_x, padding_y, padding_y))
         .style(theme.panel_surface_style())
+}
+
+fn activity_surface_style(theme: ThemePalette) -> Style {
+    Style::default().fg(theme.panel_fg)
 }
 
 fn modal_block(theme: ThemePalette, title: &str) -> Block<'static> {
@@ -349,7 +387,18 @@ fn format_chars(n: usize) -> String {
     }
 }
 
-fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
+fn activity_text_limit(content_width: u16, reserved_cols: usize) -> usize {
+    (content_width as usize)
+        .saturating_sub(reserved_cols)
+        .max(12)
+}
+
+fn build_activity_lines(
+    app: &App,
+    theme: ThemePalette,
+    content_width: u16,
+    max_rows: u16,
+) -> Vec<Line<'static>> {
     // Finished: show green dot + "completed in XX:XX" persistently.
     if app.finished_at.is_some() && !app.running {
         let dot_color = Color::Rgb(120, 120, 128);
@@ -366,9 +415,7 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
         return vec![Line::from(vec![
             Span::styled(
                 " \u{25cf} ",
-                Style::default()
-                    .fg(dot_color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(dot_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" {} | completed in {} ", label, elapsed),
@@ -407,25 +454,17 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
             let dot_color = color_with_breath(spinner_base_color(active_provider, theme), frame);
             let elapsed_secs = app.running_elapsed_secs();
             let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
-            let activity = if app.last_tool_event.trim().is_empty() {
-                let verb_idx = (app.spinner_idx / 64) % ACTIVITY_VERBS.len();
-                ACTIVITY_VERBS[verb_idx].to_string()
-            } else {
-                truncate(&app.last_tool_event, 68)
-            };
+            let verb_idx = (app.spinner_idx / 64) % ACTIVITY_VERBS.len();
+            let activity = ACTIVITY_VERBS[verb_idx];
             let line_color = spinner_base_color(active_provider, theme);
             lines.push(Line::from(vec![
                 Span::styled(
                     " \u{25cf} ",
-                    Style::default()
-                        .fg(dot_color)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(dot_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {} | {} | {} ", active, activity, elapsed),
-                    Style::default()
-                        .fg(line_color)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(line_color).add_modifier(Modifier::BOLD),
                 ),
             ]));
         } else {
@@ -440,45 +479,30 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
                 let elapsed = format!("{:02}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
 
                 let initial_idx = app.agent_verb_idx.get(&provider).copied().unwrap_or(0);
-                let verb_idx =
-                    (initial_idx + (elapsed_secs as usize / 8)) % ACTIVITY_VERBS.len();
+                let verb_idx = (initial_idx + (elapsed_secs as usize / 8)) % ACTIVITY_VERBS.len();
                 let verb = ACTIVITY_VERBS[verb_idx];
-                let agent_event = app.agent_tool_event.get(&provider).map(|s| s.as_str()).unwrap_or("");
-                let activity = if agent_event.trim().is_empty() {
-                    verb.to_string()
-                } else {
-                    truncate(agent_event, 56)
-                };
-
                 let chars = app.agent_chars.get(&provider).copied().unwrap_or(0);
                 let chars_str = format_chars(chars);
+
                 let padded_name = format!("{:width$}", provider.as_str(), width = label_width);
 
                 lines.push(Line::from(vec![
                     Span::styled(
                         " \u{25cf} ",
-                        Style::default()
-                            .fg(dot_color)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(dot_color).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!(
-                            " {} | {} | {} | {} ",
-                            padded_name,
-                            activity,
-                            elapsed,
-                            chars_str
-                        ),
-                        Style::default()
-                            .fg(line_color)
-                            .add_modifier(Modifier::BOLD),
+                        format!(" {} | {} | {} | {} ", padded_name, verb, elapsed, chars_str),
+                        Style::default().fg(line_color).add_modifier(Modifier::BOLD),
                     ),
                 ]));
             }
         }
 
         // Append recent activity log entries below the spinner lines.
-        for entry in &app.activity_log {
+        let log_budget = max_rows.saturating_sub(lines.len() as u16) as usize;
+        let start = app.activity_log.len().saturating_sub(log_budget);
+        for entry in app.activity_log.iter().skip(start) {
             let is_tool_call = entry.contains("calling tool:")
                 || entry.contains("tool:")
                 || entry.contains("invoke ")
@@ -509,7 +533,10 @@ fn build_activity_lines(app: &App, theme: ThemePalette) -> Vec<Line<'static>> {
             };
             lines.push(Line::from(vec![
                 Span::styled(icon, icon_style),
-                Span::styled(truncate(entry, 72), text_style),
+                Span::styled(
+                    truncate(entry, activity_text_limit(content_width, 4)),
+                    text_style,
+                ),
             ]));
         }
 

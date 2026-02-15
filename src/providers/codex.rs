@@ -87,7 +87,10 @@ pub(crate) fn run_stream(
         fallback_lines.push(line.clone());
         if let Some(progress) = extract_progress(&line, prefer_zh) {
             if progress != last_progress {
-                let _ = tx.send(WorkerEvent::Progress(progress.clone()));
+                let _ = tx.send(WorkerEvent::Progress {
+                    provider,
+                    msg: progress.clone(),
+                });
                 last_progress = progress;
             }
         }
@@ -131,7 +134,7 @@ fn parse_json_line(line: &str) -> Option<Value> {
 }
 
 fn humanize_item_type(raw: &str) -> String {
-    raw.replace('_', " ").replace('-', " ")
+    raw.replace(['_', '-'], " ")
 }
 
 fn preview(text: &str, max_chars: usize) -> String {
@@ -140,14 +143,12 @@ fn preview(text: &str, max_chars: usize) -> String {
         return String::new();
     }
     let mut out = String::new();
-    let mut seen = 0usize;
-    for ch in t.chars() {
+    for (seen, ch) in t.chars().enumerate() {
         if seen >= max_chars {
             out.push_str("...");
             break;
         }
         out.push(ch);
-        seen += 1;
     }
     out
 }
@@ -272,12 +273,10 @@ fn extract_progress(line: &str, prefer_zh: bool) -> Option<String> {
                         } else {
                             format!("codex exec done ({code}): {cmd}")
                         }
+                    } else if prefer_zh {
+                        format!("codex 执行{}: {}", status, cmd)
                     } else {
-                        if prefer_zh {
-                            format!("codex 执行{}: {}", status, cmd)
-                        } else {
-                            format!("codex exec {}: {}", status, cmd)
-                        }
+                        format!("codex exec {}: {}", status, cmd)
                     };
                     let output_preview = item
                         .get("aggregated_output")

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::Stdout;
 use std::os::unix::fs::PermissionsExt;
@@ -29,7 +30,8 @@ const APP_VERSION: &str = "0.2.2";
 // Breathing dot indicator (kept for potential future use).
 #[allow(dead_code)]
 const SPINNER: &[&str] = &["●"];
-const THINKING_PLACEHOLDER: &str = "(thinking...)";
+const WORKING_PLACEHOLDER: &str = "working...";
+pub(crate) const TRANSCRIPT_PROGRESS_PREFIX: &str = "[progress] ";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DispatchTarget {
@@ -69,8 +71,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
     enable_raw_mode().context("enable raw mode")?;
 
-    let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-    let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+    let (term_width, term_height) = crossterm::terminal::size().unwrap_or((80, 24));
     let inline_height = compute_inline_height(term_height);
 
     let mut terminal = match Terminal::with_options(
@@ -220,12 +221,39 @@ fn cleaned_assistant_text(entry: &LogEntry) -> String {
     } else {
         text.to_string()
     };
-    let cleaned_trimmed = cleaned.trim();
-    if cleaned_trimmed.is_empty() || cleaned_trimmed == THINKING_PLACEHOLDER {
+    let normalized = strip_leading_blank_lines(&cleaned);
+    let cleaned_trimmed = normalized.trim();
+    if cleaned_trimmed.is_empty() || cleaned_trimmed == WORKING_PLACEHOLDER {
         String::new()
     } else {
-        cleaned
+        normalized
     }
+}
+
+fn strip_leading_blank_lines(text: &str) -> String {
+    let mut dropping = true;
+    let mut kept: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if dropping && line.trim().is_empty() {
+            continue;
+        }
+        dropping = false;
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
+fn cleaned_assistant_text_for_model(entry: &LogEntry) -> String {
+    let cleaned = cleaned_assistant_text(entry);
+    if cleaned.is_empty() {
+        return cleaned;
+    }
+    let filtered = cleaned
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(TRANSCRIPT_PROGRESS_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n");
+    filtered.trim().to_string()
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -281,6 +309,40 @@ fn ordered_providers(
         }
     }
     ordered
+}
+
+fn resolve_dispatch_providers(
+    primary_provider: Provider,
+    available_providers: &[Provider],
+    dispatch_target: &DispatchTarget,
+) -> Vec<Provider> {
+    match dispatch_target {
+        DispatchTarget::Primary => {
+            if available_providers.contains(&primary_provider) {
+                vec![primary_provider]
+            } else {
+                Vec::new()
+            }
+        }
+        DispatchTarget::All => ordered_providers(primary_provider, available_providers),
+        DispatchTarget::Provider(provider) => {
+            if available_providers.contains(provider) {
+                vec![*provider]
+            } else {
+                Vec::new()
+            }
+        }
+        DispatchTarget::Providers(targets) => {
+            let mut providers = Vec::with_capacity(targets.len());
+            let mut seen = HashSet::new();
+            for provider in targets {
+                if available_providers.contains(provider) && seen.insert(*provider) {
+                    providers.push(*provider);
+                }
+            }
+            providers
+        }
+    }
 }
 
 fn providers_label(providers: &[Provider]) -> String {

@@ -21,10 +21,10 @@ use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    cleaned_assistant_text, default_commands, detect_available_providers, execute_line,
-    extract_agent_name, high_risk_check, input_cursor_position, kill_pid, memory::MemoryStore,
-    ordered_providers, provider_from_name, providers_label, truncate, DispatchTarget,
-    THINKING_PLACEHOLDER,
+    cleaned_assistant_text, cleaned_assistant_text_for_model, default_commands,
+    detect_available_providers, execute_line, extract_agent_name, high_risk_check,
+    input_cursor_position, kill_pid, memory::MemoryStore, ordered_providers, provider_from_name,
+    providers_label, resolve_dispatch_providers, truncate, DispatchTarget, WORKING_PLACEHOLDER,
 };
 
 const COLLAPSED_PASTE_CHAR_THRESHOLD: usize = 800;
@@ -33,7 +33,9 @@ const MEM_SHOW_DEFAULT_LIMIT: usize = 20;
 const MEM_SHOW_MAX_LIMIT: usize = 200;
 const MEM_FIND_DEFAULT_LIMIT: usize = 12;
 const MEM_PRUNE_DEFAULT_KEEP: usize = 200;
+const MAX_ACTIVITY_LOG_LINES: usize = 7;
 const STARTUP_BANNER_PREFIX: &str = "__startup_banner__:";
+const ASSISTANT_DIVIDER: char = '│';
 
 #[path = "ui.rs"]
 pub(crate) mod ui;
@@ -100,20 +102,19 @@ impl ThemePreset {
         match self {
             ThemePreset::Fjord => ThemePalette {
                 // 经典黑金主题 - 高端商务感
-                prompt: Color::Rgb(192, 192, 192),      // 银灰色提示符
-                input_bg: Color::Rgb(18, 18, 18),       // 深黑输入背景
-                input_text: Color::Rgb(224, 224, 224),  // 浅银灰文字
-                muted_text: Color::Rgb(128, 128, 128),  // 灰色次要文字
+                prompt: Color::Rgb(192, 192, 192), // 银灰色提示符
+                input_text: Color::Rgb(224, 224, 224), // 浅银灰文字
+                muted_text: Color::Rgb(128, 128, 128), // 灰色次要文字
                 highlight_fg: Color::Rgb(255, 255, 255), // 白色高亮前景
-                highlight_bg: Color::Rgb(64, 64, 64),   // 深灰高亮背景
+                highlight_bg: Color::Rgb(64, 64, 64), // 深灰高亮背景
                 activity_badge_fg: Color::Rgb(255, 255, 255),
                 activity_badge_bg: Color::Rgb(80, 80, 80),
                 activity_text: Color::Rgb(160, 160, 160),
                 status_text: Color::Rgb(140, 140, 140),
                 user_fg: Color::Rgb(255, 255, 255),
                 user_bg: Color::Rgb(25, 25, 25),
-                claude_label: Color::Rgb(255, 127, 80),   // 橙色Claude标签
-                codex_label: Color::Rgb(65, 105, 225),    // 蓝色Codex标签
+                claude_label: Color::Rgb(255, 127, 80), // 橙色Claude标签
+                codex_label: Color::Rgb(65, 105, 225),  // 蓝色Codex标签
                 processing_label: Color::Rgb(180, 180, 180),
                 assistant_text: Color::Rgb(210, 210, 210),
                 assistant_processing_text: Color::Rgb(170, 170, 170),
@@ -134,20 +135,19 @@ impl ThemePreset {
             },
             ThemePreset::Graphite => ThemePalette {
                 // 深海蓝主题 - 专业科技感
-                prompt: Color::Rgb(100, 150, 200),      // 蓝色提示符
-                input_bg: Color::Rgb(15, 25, 35),       // 深蓝输入背景
-                input_text: Color::Rgb(180, 200, 220),  // 浅蓝文字
-                muted_text: Color::Rgb(80, 100, 120),   // 深蓝次要文字
+                prompt: Color::Rgb(100, 150, 200),     // 蓝色提示符
+                input_text: Color::Rgb(180, 200, 220), // 浅蓝文字
+                muted_text: Color::Rgb(80, 100, 120),  // 深蓝次要文字
                 highlight_fg: Color::Rgb(200, 220, 240), // 浅蓝高亮前景
-                highlight_bg: Color::Rgb(40, 60, 80),   // 中蓝高亮背景
+                highlight_bg: Color::Rgb(40, 60, 80),  // 中蓝高亮背景
                 activity_badge_fg: Color::Rgb(200, 220, 240),
                 activity_badge_bg: Color::Rgb(50, 70, 90),
                 activity_text: Color::Rgb(120, 140, 160),
                 status_text: Color::Rgb(90, 110, 130),
                 user_fg: Color::Rgb(200, 220, 240),
                 user_bg: Color::Rgb(25, 35, 45),
-                claude_label: Color::Rgb(255, 127, 80),   // 橙色Claude标签
-                codex_label: Color::Rgb(65, 105, 225),    // 蓝色Codex标签
+                claude_label: Color::Rgb(255, 127, 80), // 橙色Claude标签
+                codex_label: Color::Rgb(65, 105, 225),  // 蓝色Codex标签
                 processing_label: Color::Rgb(130, 160, 190),
                 assistant_text: Color::Rgb(170, 190, 210),
                 assistant_processing_text: Color::Rgb(140, 160, 180),
@@ -168,20 +168,19 @@ impl ThemePreset {
             },
             ThemePreset::Solarized => ThemePalette {
                 // 森林绿主题 - 自然护眼感
-                prompt: Color::Rgb(120, 180, 120),      // 浅绿色提示符
-                input_bg: Color::Rgb(15, 30, 15),       // 墨绿输入背景
-                input_text: Color::Rgb(180, 216, 180),  // 浅绿文字
-                muted_text: Color::Rgb(100, 140, 100),  // 深绿次要文字
+                prompt: Color::Rgb(120, 180, 120), // 浅绿色提示符
+                input_text: Color::Rgb(180, 216, 180), // 浅绿文字
+                muted_text: Color::Rgb(100, 140, 100), // 深绿次要文字
                 highlight_fg: Color::Rgb(212, 240, 212), // 亮绿高亮前景
-                highlight_bg: Color::Rgb(50, 80, 50),   // 中绿高亮背景
+                highlight_bg: Color::Rgb(50, 80, 50), // 中绿高亮背景
                 activity_badge_fg: Color::Rgb(212, 240, 212),
                 activity_badge_bg: Color::Rgb(60, 90, 60),
                 activity_text: Color::Rgb(140, 180, 140),
                 status_text: Color::Rgb(110, 150, 110),
                 user_fg: Color::Rgb(212, 240, 212),
                 user_bg: Color::Rgb(25, 40, 25),
-                claude_label: Color::Rgb(255, 127, 80),   // 橙色Claude标签
-                codex_label: Color::Rgb(65, 105, 225),    // 蓝色Codex标签
+                claude_label: Color::Rgb(255, 127, 80), // 橙色Claude标签
+                codex_label: Color::Rgb(65, 105, 225),  // 蓝色Codex标签
                 processing_label: Color::Rgb(150, 190, 150),
                 assistant_text: Color::Rgb(186, 216, 186),
                 assistant_processing_text: Color::Rgb(160, 190, 160),
@@ -202,20 +201,19 @@ impl ThemePreset {
             },
             ThemePreset::Aurora => ThemePalette {
                 // 紫罗兰主题 - 创意艺术感
-                prompt: Color::Rgb(216, 180, 224),      // 浅紫色提示符
-                input_bg: Color::Rgb(26, 15, 35),       // 深紫输入背景
-                input_text: Color::Rgb(240, 212, 248),  // 浅紫文字
-                muted_text: Color::Rgb(160, 120, 176),  // 深紫次要文字
+                prompt: Color::Rgb(216, 180, 224), // 浅紫色提示符
+                input_text: Color::Rgb(240, 212, 248), // 浅紫文字
+                muted_text: Color::Rgb(160, 120, 176), // 深紫次要文字
                 highlight_fg: Color::Rgb(255, 255, 255), // 白色高亮前景
-                highlight_bg: Color::Rgb(80, 60, 96),   // 中紫高亮背景
+                highlight_bg: Color::Rgb(80, 60, 96), // 中紫高亮背景
                 activity_badge_fg: Color::Rgb(255, 255, 255),
                 activity_badge_bg: Color::Rgb(100, 80, 120),
                 activity_text: Color::Rgb(192, 160, 208),
                 status_text: Color::Rgb(176, 140, 192),
                 user_fg: Color::Rgb(255, 255, 255),
                 user_bg: Color::Rgb(35, 25, 45),
-                claude_label: Color::Rgb(255, 127, 80),   // 橙色Claude标签
-                codex_label: Color::Rgb(65, 105, 225),    // 蓝色Codex标签
+                claude_label: Color::Rgb(255, 127, 80), // 橙色Claude标签
+                codex_label: Color::Rgb(65, 105, 225),  // 蓝色Codex标签
                 processing_label: Color::Rgb(200, 160, 216),
                 assistant_text: Color::Rgb(230, 200, 240),
                 assistant_processing_text: Color::Rgb(200, 170, 220),
@@ -236,20 +234,19 @@ impl ThemePreset {
             },
             ThemePreset::Ember => ThemePalette {
                 // 碳纤维主题 - 现代工业感
-                prompt: Color::Rgb(204, 204, 204),      // 钢灰色提示符
-                input_bg: Color::Rgb(18, 18, 18),       // 炭黑输入背景
-                input_text: Color::Rgb(238, 238, 238),  // 浅钢灰文字
-                muted_text: Color::Rgb(153, 153, 153),  // 深钢灰次要文字
+                prompt: Color::Rgb(204, 204, 204), // 钢灰色提示符
+                input_text: Color::Rgb(238, 238, 238), // 浅钢灰文字
+                muted_text: Color::Rgb(153, 153, 153), // 深钢灰次要文字
                 highlight_fg: Color::Rgb(255, 255, 255), // 纯白高亮前景
-                highlight_bg: Color::Rgb(64, 64, 64),   // 深灰高亮背景
+                highlight_bg: Color::Rgb(64, 64, 64), // 深灰高亮背景
                 activity_badge_fg: Color::Rgb(255, 255, 255),
                 activity_badge_bg: Color::Rgb(80, 80, 80),
                 activity_text: Color::Rgb(192, 192, 192),
                 status_text: Color::Rgb(170, 170, 170),
                 user_fg: Color::Rgb(255, 255, 255),
                 user_bg: Color::Rgb(26, 26, 26),
-                claude_label: Color::Rgb(255, 127, 80),   // 橙色Claude标签
-                codex_label: Color::Rgb(65, 105, 225),    // 蓝色Codex标签
+                claude_label: Color::Rgb(255, 127, 80), // 橙色Claude标签
+                codex_label: Color::Rgb(65, 105, 225),  // 蓝色Codex标签
                 processing_label: Color::Rgb(180, 180, 180),
                 assistant_text: Color::Rgb(220, 220, 220),
                 assistant_processing_text: Color::Rgb(190, 190, 190),
@@ -279,7 +276,6 @@ fn default_theme() -> ThemePreset {
 #[derive(Clone, Copy)]
 pub(crate) struct ThemePalette {
     pub(crate) prompt: Color,
-    pub(crate) input_bg: Color,
     pub(crate) input_text: Color,
     pub(crate) muted_text: Color,
     pub(crate) highlight_fg: Color,
@@ -296,6 +292,7 @@ pub(crate) struct ThemePalette {
     pub(crate) codex_label: Color,
     pub(crate) processing_label: Color,
     pub(crate) assistant_text: Color,
+    #[allow(dead_code)]
     pub(crate) assistant_processing_text: Color,
     pub(crate) system_text: Color,
     pub(crate) tool_icon: Color,
@@ -330,6 +327,7 @@ impl ThemePalette {
         Style::default().fg(self.assistant_text)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn body_processing_style(self) -> Style {
         Style::default().fg(self.assistant_processing_text)
     }
@@ -355,7 +353,7 @@ impl ThemePalette {
     }
 
     pub(crate) fn input_surface_style(self) -> Style {
-        Style::default().bg(self.input_bg).fg(self.input_text)
+        Style::default().fg(self.input_text)
     }
 
     pub(crate) fn hint_selected_style(self) -> Style {
@@ -407,13 +405,24 @@ enum Mode {
 pub(crate) enum WorkerEvent {
     Done(String),
     AgentStart(Provider),
-    AgentChunk { provider: Provider, chunk: String },
+    AgentChunk {
+        provider: Provider,
+        chunk: String,
+    },
     AgentDone(Provider),
-    Tool(String),
-    /// Lightweight progress update – only shown in the spinner area,
-    /// never written to the transcript.
-    Progress(String),
-    PromotePrimary { to: Provider, reason: String },
+    Tool {
+        provider: Option<Provider>,
+        msg: String,
+    },
+    /// Progress update shown in the spinner and activity area.
+    Progress {
+        provider: Provider,
+        msg: String,
+    },
+    PromotePrimary {
+        to: Provider,
+        reason: String,
+    },
     Error(String),
 }
 
@@ -485,15 +494,14 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
         .unwrap_or_else(Instant::now);
     let mut needs_draw = true;
     let mut flushed_log_lines: Vec<Line<'static>> = Vec::new();
+    let mut last_flush_was_running = false;
 
     loop {
         let mut state_changed = false;
         if app.poll_worker() {
             state_changed = true;
         }
-        if app.running
-            && last_spinner_tick.elapsed() >= Duration::from_millis(SPINNER_TICK_MS)
-        {
+        if app.running && last_spinner_tick.elapsed() >= Duration::from_millis(SPINNER_TICK_MS) {
             app.spinner_idx = (app.spinner_idx + 1) % 8;
             last_spinner_tick = Instant::now();
             state_changed = true;
@@ -505,6 +513,7 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
         if app.needs_screen_clear {
             app.needs_screen_clear = false;
             flushed_log_lines.clear();
+            last_flush_was_running = false;
             // Clear the entire terminal including scrollback, not just the ratatui viewport.
             crossterm::execute!(
                 std::io::stdout(),
@@ -525,7 +534,12 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
                     app.update_viewport(area.width, area.height);
                 }
                 app.ensure_render_cache();
-                flush_new_log_lines(terminal, &app, &mut flushed_log_lines)?;
+                flush_new_log_lines(
+                    terminal,
+                    &app,
+                    &mut flushed_log_lines,
+                    &mut last_flush_was_running,
+                )?;
                 terminal.draw(|f| ui::draw(f, &app))?;
                 last_draw_at = Instant::now();
                 needs_draw = false;
@@ -605,20 +619,22 @@ fn flush_new_log_lines(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &App,
     flushed_log_lines: &mut Vec<Line<'static>>,
+    last_flush_was_running: &mut bool,
 ) -> Result<()> {
-    // When running, only flush stable (non-streaming) entries so that the user
-    // message remains visible in scrollback. When idle, flush everything.
+    // While running we still flush streaming rows so work-in-progress text
+    // remains visible in transcript scrollback.
     let lines: &[Line<'static>];
-    let stable_buf;
+    let running_buf;
     if app.running {
         let w = terminal.size().map(|s| s.width).unwrap_or(80).max(1);
-        stable_buf = app.stable_log_lines(w);
-        lines = &stable_buf;
+        running_buf = app.running_flush_log_lines(w);
+        lines = &running_buf;
     } else {
         lines = app.cached_log_lines();
     }
     if lines.is_empty() {
         flushed_log_lines.clear();
+        *last_flush_was_running = false;
         return Ok(());
     }
 
@@ -627,9 +643,15 @@ fn flush_new_log_lines(
     let flushed_plain = flatten_lines_to_plain(flushed_log_lines);
     let current_plain = flatten_lines_to_plain(lines);
 
-    let append_ranges = compute_append_ranges(&flushed_plain, &current_plain);
+    let append_ranges = compute_flush_append_ranges(
+        &flushed_plain,
+        &current_plain,
+        app.running,
+        *last_flush_was_running,
+    );
     if append_ranges.is_empty() {
         *flushed_log_lines = lines.to_vec();
+        *last_flush_was_running = app.running;
         return Ok(());
     }
     let mut new_lines = Vec::new();
@@ -666,6 +688,7 @@ fn flush_new_log_lines(
     }
 
     *flushed_log_lines = lines.to_vec();
+    *last_flush_was_running = app.running;
     Ok(())
 }
 
@@ -681,6 +704,24 @@ fn flatten_line_to_plain(line: &Line<'static>) -> String {
     out
 }
 
+fn push_system_lines(lines: &mut Vec<Line<'static>>, text: &str, style: Style) {
+    let mut parts = text.split('\n');
+    let first = parts.next().unwrap_or_default();
+    let first_content = if first.is_empty() { " " } else { first };
+    lines.push(Line::from(vec![Span::styled(
+        format!("[sys] {first_content}"),
+        style,
+    )]));
+
+    for part in parts {
+        let content = if part.is_empty() { " " } else { part };
+        lines.push(Line::from(vec![Span::styled(
+            format!("      {content}"),
+            style,
+        )]));
+    }
+}
+
 fn compute_append_ranges(
     flushed_plain: &[String],
     current_plain: &[String],
@@ -694,8 +735,46 @@ fn compute_append_ranges(
     if current_plain[..flushed_plain.len()] == *flushed_plain {
         return vec![(flushed_plain.len(), current_plain.len())];
     }
-    // Existing lines changed in place. We cannot patch scrollback safely.
+    // Existing rows changed in place (including middle insertions).
+    // With append-only scrollback writes we cannot patch these safely.
     Vec::new()
+}
+
+fn compute_running_append_ranges(
+    flushed_plain: &[String],
+    current_plain: &[String],
+) -> Vec<(usize, usize)> {
+    if flushed_plain == current_plain {
+        return Vec::new();
+    }
+    if flushed_plain.len() > current_plain.len() {
+        return Vec::new();
+    }
+    if current_plain[..flushed_plain.len()] == *flushed_plain {
+        return vec![(flushed_plain.len(), current_plain.len())];
+    }
+    let common_prefix = flushed_plain
+        .iter()
+        .zip(current_plain.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common_prefix >= current_plain.len() {
+        return Vec::new();
+    }
+    vec![(common_prefix, current_plain.len())]
+}
+
+fn compute_flush_append_ranges(
+    flushed_plain: &[String],
+    current_plain: &[String],
+    is_running: bool,
+    last_flush_was_running: bool,
+) -> Vec<(usize, usize)> {
+    if is_running || last_flush_was_running {
+        compute_running_append_ranges(flushed_plain, current_plain)
+    } else {
+        compute_append_ranges(flushed_plain, current_plain)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1006,26 +1085,37 @@ impl App {
         &self.render_cache.lines
     }
 
-    /// Render only the entries that are stable (not currently being streamed).
-    /// This includes Tool/System/Error entries that appear after streaming
-    /// Assistant entries, so the user can see tool activity in real-time.
-    fn stable_log_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if self.entries.is_empty() {
-            return Vec::new();
-        }
-        // Collect indices of streaming assistant entries to skip.
-        let mut streaming_indices = std::collections::HashSet::new();
-        if let Some(idx) = self.assistant_idx {
-            streaming_indices.insert(idx);
-        }
-        for &idx in self.agent_entries.values() {
-            streaming_indices.insert(idx);
-        }
-        if streaming_indices.is_empty() {
-            // No streaming entries; everything is stable.
+    /// Render transcript lines for running flushes.
+    /// This includes streaming rows so users can see in-progress output.
+    fn running_flush_log_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if !self.running {
             return self.render_entries_lines(width);
         }
-        self.render_entries_lines_filtered(width, &streaming_indices)
+
+        // Scrollback writes are append-only; if we flush a placeholder row now,
+        // the first real chunk can only be appended on a new line later.
+        // Skip placeholder-only active assistant entries until content arrives.
+        let mut active_entry_indices: HashSet<usize> =
+            self.agent_entries.values().copied().collect();
+        if let Some(idx) = self.assistant_idx {
+            active_entry_indices.insert(idx);
+        }
+        let skip_indices = active_entry_indices
+            .into_iter()
+            .filter(|idx| {
+                self.entries.get(*idx).is_some_and(|entry| {
+                    matches!(entry.kind, EntryKind::Assistant)
+                        && entry.text.contains(WORKING_PLACEHOLDER)
+                        && cleaned_assistant_text(entry).trim().is_empty()
+                })
+            })
+            .collect::<HashSet<_>>();
+
+        if skip_indices.is_empty() {
+            self.render_entries_lines(width)
+        } else {
+            self.render_entries_lines_filtered(width, &skip_indices)
+        }
     }
     fn update_viewport(&mut self, width: u16, height: u16) {
         self.viewport_width = width.max(1);
@@ -1192,7 +1282,7 @@ impl App {
                     }
                 }
                 EntryKind::Assistant => {
-                    let text = cleaned_assistant_text(entry);
+                    let text = cleaned_assistant_text_for_model(entry);
                     let text = text.trim();
                     if text.is_empty() {
                         continue;
@@ -1322,10 +1412,8 @@ impl App {
 
         for &idx in self.agent_entries.values() {
             if let Some(entry) = self.entries.get_mut(idx) {
-                if entry.text.contains(THINKING_PLACEHOLDER) {
-                    entry.text = entry
-                        .text
-                        .replacen(THINKING_PLACEHOLDER, "(interrupted)", 1);
+                if entry.text.contains(WORKING_PLACEHOLDER) {
+                    entry.text = entry.text.replacen(WORKING_PLACEHOLDER, "(interrupted)", 1);
                 } else if entry.text.trim().is_empty() {
                     entry.text = "(interrupted)".to_string();
                 }
@@ -1333,10 +1421,8 @@ impl App {
         }
         if let Some(i) = self.assistant_idx {
             if let Some(entry) = self.entries.get_mut(i) {
-                if entry.text.contains(THINKING_PLACEHOLDER) {
-                    entry.text = entry
-                        .text
-                        .replacen(THINKING_PLACEHOLDER, "(interrupted)", 1);
+                if entry.text.contains(WORKING_PLACEHOLDER) {
+                    entry.text = entry.text.replacen(WORKING_PLACEHOLDER, "(interrupted)", 1);
                 } else if entry.text.trim().is_empty() {
                     entry.text = "(interrupted)".to_string();
                 }
@@ -1376,6 +1462,7 @@ impl App {
                         if chunk.trim().is_empty() {
                             continue;
                         }
+                        self.stream_had_chunk = true;
                         *self.agent_chars.entry(provider).or_insert(0) += chunk.len();
                         if let Some(i) = self.agent_entries.get(&provider).copied() {
                             if let Some(entry) = self.entries.get_mut(i) {
@@ -1384,8 +1471,8 @@ impl App {
                                     .get(&provider)
                                     .copied()
                                     .unwrap_or(false);
-                                if !had_chunk && entry.text.contains(THINKING_PLACEHOLDER) {
-                                    entry.text = entry.text.replacen(THINKING_PLACEHOLDER, "", 1);
+                                if !had_chunk && entry.text.contains(WORKING_PLACEHOLDER) {
+                                    entry.text = entry.text.replacen(WORKING_PLACEHOLDER, "", 1);
                                 }
                                 if provider == Provider::Codex
                                     && had_chunk
@@ -1414,9 +1501,9 @@ impl App {
                             if let Some(entry) = self.entries.get_mut(i) {
                                 entry.elapsed_secs = Some(elapsed_secs);
                                 if !had_chunk {
-                                    if entry.text.contains(THINKING_PLACEHOLDER) {
+                                    if entry.text.contains(WORKING_PLACEHOLDER) {
                                         entry.text = entry.text.replacen(
-                                            THINKING_PLACEHOLDER,
+                                            WORKING_PLACEHOLDER,
                                             "(no output)",
                                             1,
                                         );
@@ -1428,7 +1515,8 @@ impl App {
                         }
                         if let Some(i) = self.agent_entries.get(&provider).copied() {
                             if let Some(entry) = self.entries.get(i) {
-                                let text = cleaned_assistant_text(entry).trim().to_string();
+                                let text =
+                                    cleaned_assistant_text_for_model(entry).trim().to_string();
                                 if !text.is_empty()
                                     && text != "(no output)"
                                     && text != "(failed)"
@@ -1484,11 +1572,11 @@ impl App {
                                         }
                                         if final_text.is_empty() {
                                             if entry.text.trim().is_empty()
-                                                || entry.text.trim() == THINKING_PLACEHOLDER
+                                                || entry.text.trim() == WORKING_PLACEHOLDER
                                             {
                                                 entry.text = "(no output)".to_string();
                                             }
-                                        } else if entry.text.trim() == THINKING_PLACEHOLDER {
+                                        } else if entry.text.trim() == WORKING_PLACEHOLDER {
                                             entry.text = final_text.to_string();
                                         } else {
                                             entry.text.push_str(final_text);
@@ -1513,9 +1601,9 @@ impl App {
                                     if entry.elapsed_secs.is_none() {
                                         entry.elapsed_secs = Some(elapsed_secs);
                                     }
-                                    if entry.text.contains(THINKING_PLACEHOLDER) {
+                                    if entry.text.contains(WORKING_PLACEHOLDER) {
                                         entry.text =
-                                            entry.text.replacen(THINKING_PLACEHOLDER, "", 1);
+                                            entry.text.replacen(WORKING_PLACEHOLDER, "", 1);
                                     }
                                     entry.text.push_str(final_text.trim());
                                 }
@@ -1529,44 +1617,39 @@ impl App {
                         self.last_status = "done".to_string();
                         break;
                     }
-                    Ok(WorkerEvent::Tool(msg)) => {
+                    Ok(WorkerEvent::Tool { provider, msg }) => {
                         processed_any = true;
                         let msg = sanitize_runtime_text(&msg);
                         if msg.trim().is_empty() {
                             continue;
                         }
-                        if let Some(ap) = self.active_provider {
+                        if let Some(ap) = provider.or(self.active_provider) {
                             self.agent_tool_event.insert(ap, msg.clone());
                         }
                         self.last_tool_event = msg.clone();
                         self.last_status = format!("tool: {}", truncate(&msg, 48));
                         // Tool events only go to the live activity area (not transcript).
-                        const MAX_ACTIVITY_LOG: usize = 5;
                         self.activity_log.push_back(msg);
-                        while self.activity_log.len() > MAX_ACTIVITY_LOG {
+                        while self.activity_log.len() > MAX_ACTIVITY_LOG_LINES {
                             self.activity_log.pop_front();
                         }
                         render_changed = true;
                     }
-                    Ok(WorkerEvent::Progress(msg)) => {
+                    Ok(WorkerEvent::Progress { provider, msg }) => {
                         processed_any = true;
                         let msg = sanitize_runtime_text(&msg);
                         if msg.trim().is_empty() {
                             continue;
                         }
-                        if let Some(ap) = self.active_provider {
-                            self.agent_tool_event.insert(ap, msg.clone());
-                        }
+                        self.agent_tool_event.insert(provider, msg.clone());
                         self.last_tool_event = msg.clone();
                         // Add progress to activity log.
-                        const MAX_ACTIVITY_LOG_P: usize = 5;
                         self.activity_log.push_back(msg.clone());
-                        while self.activity_log.len() > MAX_ACTIVITY_LOG_P {
+                        while self.activity_log.len() > MAX_ACTIVITY_LOG_LINES {
                             self.activity_log.pop_front();
                         }
-                        self.last_status = format!("progress: {}", truncate(&msg, 48));
-                        // Progress events only update the spinner area;
-                        // they are NOT written to the transcript.
+                        self.last_status =
+                            format!("progress {}: {}", provider.as_str(), truncate(&msg, 42));
                     }
                     Ok(WorkerEvent::PromotePrimary { to, reason }) => {
                         processed_any = true;
@@ -1585,19 +1668,16 @@ impl App {
                         if let Some(provider) = self.active_provider {
                             if let Some(i) = self.agent_entries.get(&provider).copied() {
                                 if let Some(entry) = self.entries.get_mut(i) {
-                                    if entry.text.contains(THINKING_PLACEHOLDER) {
-                                        entry.text = entry.text.replacen(
-                                            THINKING_PLACEHOLDER,
-                                            "(failed)",
-                                            1,
-                                        );
+                                    if entry.text.contains(WORKING_PLACEHOLDER) {
+                                        entry.text =
+                                            entry.text.replacen(WORKING_PLACEHOLDER, "(failed)", 1);
                                     }
                                 }
                             }
                         } else if let Some(i) = self.assistant_idx {
                             if let Some(entry) = self.entries.get_mut(i) {
                                 if entry.text.trim().is_empty()
-                                    || entry.text.trim() == THINKING_PLACEHOLDER
+                                    || entry.text.trim() == WORKING_PLACEHOLDER
                                 {
                                     entry.text = "(failed)".to_string();
                                 }
@@ -1616,9 +1696,9 @@ impl App {
                         if let Some(provider) = self.active_provider {
                             if let Some(i) = self.agent_entries.get(&provider).copied() {
                                 if let Some(entry) = self.entries.get_mut(i) {
-                                    if entry.text.contains(THINKING_PLACEHOLDER) {
+                                    if entry.text.contains(WORKING_PLACEHOLDER) {
                                         entry.text = entry.text.replacen(
-                                            THINKING_PLACEHOLDER,
+                                            WORKING_PLACEHOLDER,
                                             "(disconnected)",
                                             1,
                                         );
@@ -1628,7 +1708,7 @@ impl App {
                         } else if let Some(i) = self.assistant_idx {
                             if let Some(entry) = self.entries.get_mut(i) {
                                 if entry.text.trim().is_empty()
-                                    || entry.text.trim() == THINKING_PLACEHOLDER
+                                    || entry.text.trim() == WORKING_PLACEHOLDER
                                 {
                                     entry.text = "(disconnected)".to_string();
                                 }
@@ -1743,35 +1823,11 @@ impl App {
         let providers = if is_slash {
             Vec::new()
         } else {
-            match &dispatch_target {
-                DispatchTarget::Primary => {
-                    if self.available_providers.contains(&self.primary_provider) {
-                        vec![self.primary_provider]
-                    } else {
-                        Vec::new()
-                    }
-                }
-                DispatchTarget::All => {
-                    ordered_providers(self.primary_provider, &self.available_providers)
-                }
-                DispatchTarget::Provider(provider) => {
-                    if self.available_providers.contains(provider) {
-                        vec![*provider]
-                    } else {
-                        Vec::new()
-                    }
-                }
-                DispatchTarget::Providers(targets) => targets
-                    .iter()
-                    .copied()
-                    .filter(|provider| self.available_providers.contains(provider))
-                    .fold(Vec::new(), |mut acc, provider| {
-                        if !acc.contains(&provider) {
-                            acc.push(provider);
-                        }
-                        acc
-                    }),
-            }
+            resolve_dispatch_providers(
+                self.primary_provider,
+                &self.available_providers,
+                &dispatch_target,
+            )
         };
         if !is_slash && providers.is_empty() {
             let msg = match &dispatch_target {
@@ -1828,13 +1884,13 @@ impl App {
             providers_label(&providers)
         };
         if is_slash {
-            self.push_entry(EntryKind::Assistant, THINKING_PLACEHOLDER.to_string());
+            self.push_entry(EntryKind::Assistant, WORKING_PLACEHOLDER.to_string());
             self.assistant_idx = Some(self.entries.len() - 1);
         } else {
             for provider in providers.iter().copied() {
                 self.push_entry(
                     EntryKind::Assistant,
-                    format!("[{}]\n{}", provider.as_str(), THINKING_PLACEHOLDER),
+                    format!("[{}]\n{}", provider.as_str(), WORKING_PLACEHOLDER),
                 );
                 self.agent_entries.insert(provider, self.entries.len() - 1);
                 self.agent_had_chunk.insert(provider, false);
@@ -1986,10 +2042,7 @@ impl App {
                     Some(raw) => match raw.parse::<usize>() {
                         Ok(v) if v > 0 => v.min(MEM_SHOW_MAX_LIMIT),
                         _ => {
-                            self.push_entry(
-                                EntryKind::Error,
-                                "usage: /mem show [positive-number]",
-                            );
+                            self.push_entry(EntryKind::Error, "usage: /mem show [positive-number]");
                             self.last_status = "memory usage".to_string();
                             return;
                         }
@@ -2025,10 +2078,7 @@ impl App {
                 }
             }
             "find" => {
-                let query = args
-                    .strip_prefix("find")
-                    .map(str::trim)
-                    .unwrap_or_default();
+                let query = args.strip_prefix("find").map(str::trim).unwrap_or_default();
                 if query.is_empty() {
                     self.push_entry(EntryKind::Error, "usage: /mem find <query>");
                     self.last_status = "memory usage".to_string();
@@ -2270,7 +2320,7 @@ impl App {
                 .map(|c| !c.is_whitespace())
                 .unwrap_or(true);
             if needs_space {
-                self.input.insert_str(cursor, " ");
+                self.input.insert(cursor, ' ');
                 cursor += 1;
             }
             self.cursor = cursor;
@@ -2585,11 +2635,9 @@ impl App {
             }
             KeyCode::Tab => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    if self.cycle_inline_hint_prev() {
-                        return;
-                    }
-                } else if self.cycle_inline_hint_next() {
-                    return;
+                    self.cycle_inline_hint_prev();
+                } else {
+                    self.cycle_inline_hint_next();
                 }
             }
             KeyCode::Enter => {
@@ -2627,15 +2675,15 @@ impl App {
                     // Mark running entries as cancelled
                     for (_provider, &idx) in self.agent_entries.iter() {
                         if let Some(entry) = self.entries.get_mut(idx) {
-                            if entry.text.contains(THINKING_PLACEHOLDER) {
+                            if entry.text.contains(WORKING_PLACEHOLDER) {
                                 entry.text =
-                                    entry.text.replacen(THINKING_PLACEHOLDER, "(cancelled)", 1);
+                                    entry.text.replacen(WORKING_PLACEHOLDER, "(cancelled)", 1);
                             }
                         }
                     }
                     if let Some(idx) = self.assistant_idx {
                         if let Some(entry) = self.entries.get_mut(idx) {
-                            if entry.text.trim() == THINKING_PLACEHOLDER {
+                            if entry.text.trim() == WORKING_PLACEHOLDER {
                                 entry.text = "(cancelled)".to_string();
                             }
                         }
@@ -2661,21 +2709,31 @@ impl App {
         self.render_entries_lines_range(width, 0, self.entries.len())
     }
 
-    fn render_entries_lines_range(&self, width: u16, start: usize, end: usize) -> Vec<Line<'static>> {
+    fn render_entries_lines_range(
+        &self,
+        width: u16,
+        start: usize,
+        end: usize,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::<Line>::new();
         let palette = self.theme.palette();
+        let active_entry_indices: HashSet<usize> = self.agent_entries.values().copied().collect();
+        let max_label_width = Provider::all()
+            .iter()
+            .map(|p| UnicodeWidthStr::width(p.as_str()))
+            .max()
+            .unwrap_or(6);
 
-        for (idx, entry) in self.entries[start..end].iter().enumerate().map(|(i, e)| (i + start, e)) {
+        for (idx, entry) in self.entries[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i + start, e))
+        {
+            let line_count_before_entry = lines.len();
             let entry_provider =
                 extract_agent_name(&entry.text).and_then(|n| provider_from_name(&n));
             let is_current_entry =
-                self.assistant_idx == Some(idx) || self.agent_entries.values().any(|&i| i == idx);
-            let is_processing =
-                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
-            // Extra spacing before assistant entries for visual separation.
-            if matches!(entry.kind, EntryKind::Assistant) && idx > 0 {
-                lines.push(Line::from(""));
-            }
+                self.assistant_idx == Some(idx) || active_entry_indices.contains(&idx);
             match entry.kind {
                 EntryKind::User => {
                     let parts: Vec<&str> = entry.text.split('\n').collect();
@@ -2703,49 +2761,40 @@ impl App {
                         Provider::Codex => palette.codex_label,
                     };
                     let label = provider.as_str().to_string();
-                    let label_style = if is_processing {
-                        Style::default()
-                            .fg(palette.processing_label)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                            .fg(provider_color)
-                            .add_modifier(Modifier::BOLD)
-                    };
+                    let label_style = Style::default()
+                        .fg(provider_color)
+                        .add_modifier(Modifier::BOLD);
                     let cleaned_text = cleaned_assistant_text(entry);
                     let raw_text = if cleaned_text.trim().is_empty() {
-                        String::new()
+                        if entry.text.contains(WORKING_PLACEHOLDER) {
+                            WORKING_PLACEHOLDER.to_string()
+                        } else {
+                            String::new()
+                        }
                     } else {
                         cleaned_text
                     };
-                    let base_style = if is_processing {
-                        palette.body_processing_style()
-                    } else {
-                        palette.body_style()
-                    };
+                    let base_style = palette.body_style();
 
                     // Label column: agent name occupies a fixed-width column.
                     // Continuation and wrapped lines are indented to keep content
                     // aligned and prevent text from invading the label column.
                     // Use the longest provider name to keep all labels the same
                     // width so that content columns stay aligned across agents.
-                    let max_label_width = Provider::all()
-                        .iter()
-                        .map(|p| UnicodeWidthStr::width(p.as_str()))
-                        .max()
-                        .unwrap_or(6);
-                    let label_col_width = max_label_width + 2; // "label" + " │"
+                    let label_col_width = max_label_width + 2; // "label" + " |"
                     let padded_label = format!("{:width$}", label, width = max_label_width);
-                    let label_sep = format!("{} \u{2502}", padded_label);
+                    let label_sep = format!("{} {}", padded_label, ASSISTANT_DIVIDER);
                     let indent = " ".repeat(label_col_width.saturating_sub(1));
-                    let indent_sep = format!("{}\u{2502}", indent); // "       │"
-                    let content_width = (width as usize).saturating_sub(label_col_width + 1); // +1 for space after │
+                    let indent_sep = format!("{}{}", indent, ASSISTANT_DIVIDER); // "       |"
+                    let content_width = (width as usize).saturating_sub(label_col_width + 1); // +1 for space after divider
 
                     if raw_text.is_empty() {
-                        // No content yet (e.g. still thinking).
-                        lines.push(Line::from(vec![
-                            Span::styled(label_sep.clone(), label_style),
-                        ]));
+                        if !(self.running && is_current_entry) {
+                            lines.push(Line::from(vec![Span::styled(
+                                label_sep.clone(),
+                                label_style,
+                            )]));
+                        }
                     } else {
                         let md_lines = render_markdown(&raw_text, base_style, palette);
                         for (i, md_line) in md_lines.into_iter().enumerate() {
@@ -2761,7 +2810,7 @@ impl App {
                                     ]
                                 } else {
                                     // Continuation: indent + separator + content
-                                    // Use the same label color for the │ so it
+                                    // Use the same label color for the | so it
                                     // stays visually aligned with the agent.
                                     vec![
                                         Span::styled(indent_sep.clone(), label_style),
@@ -2800,10 +2849,9 @@ impl App {
                             }
 
                             let (raw_text, content_style) = match row {
-                                StartupBannerRow::Title(value) => (
-                                    format!(" {value}"),
-                                    palette.title_style(),
-                                ),
+                                StartupBannerRow::Title(value) => {
+                                    (format!(" {value}"), palette.title_style())
+                                }
                                 StartupBannerRow::Agents(value) => {
                                     (format!(" {value}"), palette.secondary_style())
                                 }
@@ -2833,10 +2881,9 @@ impl App {
                         }
 
                         let (text, style) = match row {
-                            StartupBannerRow::Title(value) => (
-                                value.to_string(),
-                                palette.title_style(),
-                            ),
+                            StartupBannerRow::Title(value) => {
+                                (value.to_string(), palette.title_style())
+                            }
                             StartupBannerRow::Agents(value) => {
                                 (value.to_string(), palette.secondary_style())
                             }
@@ -2853,10 +2900,7 @@ impl App {
                         }
                         continue;
                     }
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("[sys] {}", entry.text),
-                        palette.secondary_style(),
-                    )]));
+                    push_system_lines(&mut lines, &entry.text, palette.secondary_style());
                 }
                 EntryKind::Tool => {
                     let is_tool_call = entry.text.contains("calling tool:")
@@ -2906,30 +2950,74 @@ impl App {
                     ]));
                 }
             }
-            lines.push(Line::from(""));
+            if lines.len() == line_count_before_entry {
+                continue;
+            }
+
+            let next_idx = idx + 1;
+            let next_entry = if next_idx < end {
+                self.entries.get(next_idx)
+            } else {
+                None
+            };
+            let should_connect_assistant_blocks = matches!(entry.kind, EntryKind::Assistant)
+                && next_entry.is_some_and(|next| matches!(next.kind, EntryKind::Assistant))
+                && next_entry.is_some_and(|next| {
+                    let current_provider = entry_provider.unwrap_or(self.primary_provider);
+                    let next_provider = extract_agent_name(&next.text)
+                        .and_then(|n| provider_from_name(&n))
+                        .unwrap_or(self.primary_provider);
+                    current_provider == next_provider
+                });
+
+            let is_running_stream_entry =
+                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
+            if should_connect_assistant_blocks {
+                let provider = entry_provider.unwrap_or(self.primary_provider);
+                let provider_color = match provider {
+                    Provider::Claude => palette.claude_label,
+                    Provider::Codex => palette.codex_label,
+                };
+                let label_style = Style::default()
+                    .fg(provider_color)
+                    .add_modifier(Modifier::BOLD);
+                let label_col_width = max_label_width + 2;
+                let indent = " ".repeat(label_col_width.saturating_sub(1));
+                let indent_sep = format!("{}{}", indent, ASSISTANT_DIVIDER);
+                lines.push(Line::from(vec![Span::styled(indent_sep, label_style)]));
+            } else if !is_running_stream_entry {
+                lines.push(Line::from(""));
+            }
         }
 
         lines
     }
 
     /// Render all entries except those at the given indices (streaming assistant entries).
-    fn render_entries_lines_filtered(&self, width: u16, skip_indices: &std::collections::HashSet<usize>) -> Vec<Line<'static>> {
+    #[allow(dead_code)]
+    fn render_entries_lines_filtered(
+        &self,
+        width: u16,
+        skip_indices: &std::collections::HashSet<usize>,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::<Line>::new();
         let palette = self.theme.palette();
+        let active_entry_indices: HashSet<usize> = self.agent_entries.values().copied().collect();
+        let max_label_width = Provider::all()
+            .iter()
+            .map(|p| UnicodeWidthStr::width(p.as_str()))
+            .max()
+            .unwrap_or(6);
 
         for (idx, entry) in self.entries.iter().enumerate() {
             if skip_indices.contains(&idx) {
                 continue;
             }
+            let line_count_before_entry = lines.len();
             let entry_provider =
                 extract_agent_name(&entry.text).and_then(|n| provider_from_name(&n));
             let is_current_entry =
-                self.assistant_idx == Some(idx) || self.agent_entries.values().any(|&i| i == idx);
-            let is_processing =
-                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
-            if matches!(entry.kind, EntryKind::Assistant) && idx > 0 {
-                lines.push(Line::from(""));
-            }
+                self.assistant_idx == Some(idx) || active_entry_indices.contains(&idx);
             match entry.kind {
                 EntryKind::User => {
                     let parts: Vec<&str> = entry.text.split('\n').collect();
@@ -2957,41 +3045,33 @@ impl App {
                         Provider::Codex => palette.codex_label,
                     };
                     let label = provider.as_str().to_string();
-                    let label_style = if is_processing {
-                        Style::default()
-                            .fg(palette.processing_label)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                            .fg(provider_color)
-                            .add_modifier(Modifier::BOLD)
-                    };
+                    let label_style = Style::default()
+                        .fg(provider_color)
+                        .add_modifier(Modifier::BOLD);
                     let cleaned_text = cleaned_assistant_text(entry);
                     let raw_text = if cleaned_text.trim().is_empty() {
-                        String::new()
+                        if entry.text.contains(WORKING_PLACEHOLDER) {
+                            WORKING_PLACEHOLDER.to_string()
+                        } else {
+                            String::new()
+                        }
                     } else {
                         cleaned_text
                     };
-                    let base_style = if is_processing {
-                        palette.body_processing_style()
-                    } else {
-                        palette.body_style()
-                    };
-                    let max_label_width = Provider::all()
-                        .iter()
-                        .map(|p| UnicodeWidthStr::width(p.as_str()))
-                        .max()
-                        .unwrap_or(6);
+                    let base_style = palette.body_style();
                     let label_col_width = max_label_width + 2;
                     let padded_label = format!("{:width$}", label, width = max_label_width);
-                    let label_sep = format!("{} \u{2502}", padded_label);
+                    let label_sep = format!("{} {}", padded_label, ASSISTANT_DIVIDER);
                     let indent = " ".repeat(label_col_width.saturating_sub(1));
-                    let indent_sep = format!("{}\u{2502}", indent);
+                    let indent_sep = format!("{}{}", indent, ASSISTANT_DIVIDER);
                     let content_width = (width as usize).saturating_sub(label_col_width + 1);
                     if raw_text.is_empty() {
-                        lines.push(Line::from(vec![
-                            Span::styled(label_sep.clone(), label_style),
-                        ]));
+                        if !(self.running && is_current_entry) {
+                            lines.push(Line::from(vec![Span::styled(
+                                label_sep.clone(),
+                                label_style,
+                            )]));
+                        }
                     } else {
                         let md_lines = render_markdown(&raw_text, base_style, palette);
                         for (i, md_line) in md_lines.into_iter().enumerate() {
@@ -3020,7 +3100,8 @@ impl App {
                         let prev_is_banner = prev_non_skipped
                             .and_then(|i| self.entries.get(i))
                             .is_some_and(is_startup_banner_entry);
-                        let next_non_skipped = (idx + 1..self.entries.len()).find(|i| !skip_indices.contains(i));
+                        let next_non_skipped =
+                            (idx + 1..self.entries.len()).find(|i| !skip_indices.contains(i));
                         let next_is_banner = next_non_skipped
                             .and_then(|i| self.entries.get(i))
                             .is_some_and(is_startup_banner_entry);
@@ -3038,10 +3119,9 @@ impl App {
                                 ]));
                             }
                             let (raw_text, content_style) = match row {
-                                StartupBannerRow::Title(value) => (
-                                    format!(" {value}"),
-                                    palette.title_style(),
-                                ),
+                                StartupBannerRow::Title(value) => {
+                                    (format!(" {value}"), palette.title_style())
+                                }
                                 StartupBannerRow::Agents(value) => {
                                     (format!(" {value}"), palette.secondary_style())
                                 }
@@ -3069,10 +3149,9 @@ impl App {
                             continue;
                         }
                         let (text, style) = match row {
-                            StartupBannerRow::Title(value) => (
-                                value.to_string(),
-                                palette.title_style(),
-                            ),
+                            StartupBannerRow::Title(value) => {
+                                (value.to_string(), palette.title_style())
+                            }
                             StartupBannerRow::Agents(value) => {
                                 (value.to_string(), palette.secondary_style())
                             }
@@ -3089,10 +3168,7 @@ impl App {
                         }
                         continue;
                     }
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("[sys] {}", entry.text),
-                        palette.secondary_style(),
-                    )]));
+                    push_system_lines(&mut lines, &entry.text, palette.secondary_style());
                 }
                 EntryKind::Tool => {
                     let is_tool_call = entry.text.contains("calling tool:")
@@ -3142,7 +3218,44 @@ impl App {
                     ]));
                 }
             }
-            lines.push(Line::from(""));
+            if lines.len() == line_count_before_entry {
+                continue;
+            }
+
+            let next_non_skipped =
+                (idx + 1..self.entries.len()).find(|i| !skip_indices.contains(i));
+            let should_connect_assistant_blocks = matches!(entry.kind, EntryKind::Assistant)
+                && next_non_skipped
+                    .and_then(|i| self.entries.get(i))
+                    .is_some_and(|next| matches!(next.kind, EntryKind::Assistant))
+                && next_non_skipped
+                    .and_then(|i| self.entries.get(i))
+                    .is_some_and(|next| {
+                        let current_provider = entry_provider.unwrap_or(self.primary_provider);
+                        let next_provider = extract_agent_name(&next.text)
+                            .and_then(|n| provider_from_name(&n))
+                            .unwrap_or(self.primary_provider);
+                        current_provider == next_provider
+                    });
+
+            let is_running_stream_entry =
+                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
+            if should_connect_assistant_blocks {
+                let provider = entry_provider.unwrap_or(self.primary_provider);
+                let provider_color = match provider {
+                    Provider::Claude => palette.claude_label,
+                    Provider::Codex => palette.codex_label,
+                };
+                let label_style = Style::default()
+                    .fg(provider_color)
+                    .add_modifier(Modifier::BOLD);
+                let label_col_width = max_label_width + 2;
+                let indent = " ".repeat(label_col_width.saturating_sub(1));
+                let indent_sep = format!("{}{}", indent, ASSISTANT_DIVIDER);
+                lines.push(Line::from(vec![Span::styled(indent_sep, label_style)]));
+            } else if !is_running_stream_entry {
+                lines.push(Line::from(""));
+            }
         }
 
         lines
@@ -3268,10 +3381,7 @@ fn render_markdown(
             // Render the fence line itself in code style
             let lang = trimmed.trim_start_matches('`').trim();
             if lang.is_empty() {
-                result.push(vec![Span::styled(
-                    "───".to_string(),
-                    palette.muted_style(),
-                )]);
+                result.push(vec![Span::styled("───".to_string(), palette.muted_style())]);
             } else {
                 result.push(vec![
                     Span::styled("─── ".to_string(), palette.muted_style()),
@@ -3299,10 +3409,7 @@ fn render_markdown(
                 result.push(vec![Span::styled(prefix, heading_style)]);
             } else {
                 result.push(vec![
-                    Span::styled(
-                        format!("{} ", prefix),
-                        palette.muted_style(),
-                    ),
+                    Span::styled(format!("{} ", prefix), palette.muted_style()),
                     Span::styled(heading_text.to_string(), heading_style),
                 ]);
             }
@@ -3531,11 +3638,12 @@ fn parse_dispatch_override(
         return Err(format!("usage: {} <task>", mentions.join(" ")));
     }
 
-    if mentions.iter().any(|m| *m == "@all") {
+    if mentions.contains(&"@all") {
         return Ok(Some((DispatchTarget::All, prompt)));
     }
 
     let mut providers = Vec::new();
+    let mut seen = HashSet::new();
     for mention in mentions {
         let name = mention.trim_start_matches("@");
         let Some(provider) = provider_from_name(name) else {
@@ -3544,7 +3652,7 @@ fn parse_dispatch_override(
                 mention
             ));
         };
-        if !providers.contains(&provider) {
+        if seen.insert(provider) {
             providers.push(provider);
         }
     }
@@ -3626,13 +3734,170 @@ mod tests {
 
         let (tx, rx) = unbounded::<WorkerEvent>();
         app.rx = Some(rx);
-        tx.send(WorkerEvent::Tool("invoke bash ls -la".to_string()))
-            .expect("send tool event");
+        tx.send(WorkerEvent::Tool {
+            provider: None,
+            msg: "invoke bash ls -la".to_string(),
+        })
+        .expect("send tool event");
 
         assert!(app.poll_worker());
         let after_max = app.scroll_max();
         assert!(after_max >= before_max);
         assert_eq!(app.scroll, after_max);
+    }
+
+    #[test]
+    fn tool_events_do_not_enter_transcript_entries() {
+        let mut app = App::new();
+        app.push_entry(EntryKind::Assistant, "[claude]\nanswer");
+        let before_len = app.entries.len();
+
+        let (tx, rx) = unbounded::<WorkerEvent>();
+        app.rx = Some(rx);
+        tx.send(WorkerEvent::Tool {
+            provider: Some(Provider::Claude),
+            msg: "calling tool: Bash".to_string(),
+        })
+        .expect("send tool event");
+
+        assert!(app.poll_worker());
+        assert_eq!(app.entries.len(), before_len);
+        assert!(!app.entries[0].text.contains("calling tool: Bash"));
+    }
+
+    #[test]
+    fn progress_events_do_not_enter_transcript_entries() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(
+            EntryKind::Assistant,
+            format!("[claude]\n{}", WORKING_PLACEHOLDER),
+        );
+        app.push_entry(
+            EntryKind::Assistant,
+            format!("[codex]\n{}", WORKING_PLACEHOLDER),
+        );
+        app.agent_entries.insert(Provider::Claude, 0);
+        app.agent_entries.insert(Provider::Codex, 1);
+        app.running = true;
+        let before_claude = app.entries[0].text.clone();
+        let before_codex = app.entries[1].text.clone();
+
+        let (tx, rx) = unbounded::<WorkerEvent>();
+        app.rx = Some(rx);
+        tx.send(WorkerEvent::Progress {
+            provider: Provider::Claude,
+            msg: "thinking...".to_string(),
+        })
+        .expect("send claude progress");
+        tx.send(WorkerEvent::Progress {
+            provider: Provider::Codex,
+            msg: "drafting response".to_string(),
+        })
+        .expect("send codex progress");
+
+        assert!(app.poll_worker());
+        assert_eq!(app.entries[0].text, before_claude);
+        assert_eq!(app.entries[1].text, before_codex);
+        assert!(app.activity_log.iter().any(|item| item == "thinking..."));
+        assert!(app
+            .activity_log
+            .iter()
+            .any(|item| item == "drafting response"));
+    }
+
+    #[test]
+    fn agent_chunks_append_into_owned_agent_panel() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(
+            EntryKind::Assistant,
+            format!("[claude]\n{}", WORKING_PLACEHOLDER),
+        );
+        app.push_entry(
+            EntryKind::Assistant,
+            format!("[codex]\n{}", WORKING_PLACEHOLDER),
+        );
+        app.agent_entries.insert(Provider::Claude, 0);
+        app.agent_entries.insert(Provider::Codex, 1);
+        app.agent_had_chunk.insert(Provider::Claude, false);
+        app.agent_had_chunk.insert(Provider::Codex, false);
+        app.running = true;
+
+        let (tx, rx) = unbounded::<WorkerEvent>();
+        app.rx = Some(rx);
+        tx.send(WorkerEvent::AgentChunk {
+            provider: Provider::Claude,
+            chunk: "claude process text".to_string(),
+        })
+        .expect("send claude chunk");
+        tx.send(WorkerEvent::AgentChunk {
+            provider: Provider::Codex,
+            chunk: "codex process text".to_string(),
+        })
+        .expect("send codex chunk");
+
+        assert!(app.poll_worker());
+        assert!(app.entries[0].text.contains("claude process text"));
+        assert!(!app.entries[0].text.contains("codex process text"));
+        assert!(app.entries[1].text.contains("codex process text"));
+        assert!(!app.entries[1].text.contains("claude process text"));
+    }
+
+    #[test]
+    fn agent_chunk_marks_stream_had_chunk() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(
+            EntryKind::Assistant,
+            format!("[claude]\n{}", WORKING_PLACEHOLDER),
+        );
+        app.agent_entries.insert(Provider::Claude, 0);
+        app.agent_had_chunk.insert(Provider::Claude, false);
+        app.running = true;
+        app.stream_had_chunk = false;
+
+        let (tx, rx) = unbounded::<WorkerEvent>();
+        app.rx = Some(rx);
+        tx.send(WorkerEvent::AgentChunk {
+            provider: Provider::Claude,
+            chunk: "hello".to_string(),
+        })
+        .expect("send chunk");
+
+        assert!(app.poll_worker());
+        assert!(app.stream_had_chunk);
+    }
+
+    #[test]
+    fn running_flush_skips_placeholder_until_first_stream_chunk() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::User, "test");
+        app.push_entry(
+            EntryKind::Assistant,
+            format!("[claude]\n{}", WORKING_PLACEHOLDER),
+        );
+        app.agent_entries.insert(Provider::Claude, 1);
+        app.agent_had_chunk.insert(Provider::Claude, false);
+        app.running = true;
+
+        let before = app
+            .running_flush_log_lines(80)
+            .into_iter()
+            .map(|line| flatten_line_to_plain(&line))
+            .collect::<Vec<_>>();
+        assert!(!before.iter().any(|line| line.contains(WORKING_PLACEHOLDER)));
+
+        app.agent_had_chunk.insert(Provider::Claude, true);
+        app.entries[1].text = "[claude]\nfirst output line".to_string();
+
+        let after = app
+            .running_flush_log_lines(80)
+            .into_iter()
+            .map(|line| flatten_line_to_plain(&line))
+            .collect::<Vec<_>>();
+        assert!(after.iter().any(|line| line.contains("first output line")));
     }
 
     #[test]
@@ -3670,7 +3935,63 @@ mod tests {
         let done_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
 
         assert_eq!(running_header, done_header);
-        assert_eq!(done_header, "codex  \u{2502} answer");
+        assert_eq!(done_header, "codex  │ answer");
+    }
+
+    #[test]
+    fn assistant_entry_does_not_render_leading_blank_line_after_marker() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[codex]\n\nanswer");
+
+        let rendered = flatten_lines_to_plain(&app.render_entries_lines(80));
+
+        assert_eq!(rendered[0], "codex  │ answer");
+    }
+
+    #[test]
+    fn user_and_assistant_spacing_is_consistent_single_blank_line() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::User, "hello");
+        app.push_entry(EntryKind::Assistant, "[codex]\nanswer");
+
+        let rendered = flatten_lines_to_plain(&app.render_entries_lines(80));
+
+        assert_eq!(rendered.len(), 4);
+        assert_eq!(rendered[1], "");
+        assert_eq!(rendered[2], "codex  │ answer");
+    }
+
+    #[test]
+    fn consecutive_same_agent_entries_keep_separator_connected() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[codex]\nfirst");
+        app.push_entry(EntryKind::Assistant, "[codex]\nsecond");
+
+        let rendered = flatten_lines_to_plain(&app.render_entries_lines(80));
+
+        assert_eq!(rendered[0], "codex  │ first");
+        assert_eq!(rendered[1], "       │");
+        assert_eq!(rendered[2], "codex  │ second");
+    }
+
+    #[test]
+    fn assistant_label_color_stays_provider_colored_while_running() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[claude]\nstreaming");
+        app.agent_entries.insert(Provider::Claude, 0);
+        app.running = true;
+
+        let lines = app.render_entries_lines(80);
+        let label_fg = lines
+            .first()
+            .and_then(|line| line.spans.first())
+            .and_then(|span| span.style.fg);
+
+        assert_eq!(label_fg, Some(app.theme.palette().claude_label));
     }
 
     #[test]
@@ -3710,6 +4031,42 @@ mod tests {
         assert!(rendered.iter().any(|line| line.starts_with("│ ")));
         assert!(rendered.iter().any(|line| line.starts_with('└')));
         assert!(!rendered.iter().any(|line| line.contains("[sys]")));
+    }
+
+    #[test]
+    fn system_entries_render_multiline_text_line_by_line() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::System, "top line\nmiddle line\nbottom line");
+
+        let rendered = app
+            .render_entries_lines(80)
+            .into_iter()
+            .map(|line| flatten_line_to_plain(&line))
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line == "[sys] top line"));
+        assert!(rendered.iter().any(|line| line == "      middle line"));
+        assert!(rendered.iter().any(|line| line == "      bottom line"));
+    }
+
+    #[test]
+    fn assistant_marker_is_not_followed_by_leading_blank_content_line() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[codex]\n\n   \nFirst line");
+
+        let rendered = app
+            .render_entries_lines(80)
+            .into_iter()
+            .map(|line| flatten_line_to_plain(&line))
+            .collect::<Vec<_>>();
+
+        let first_non_empty = rendered
+            .iter()
+            .find(|line| !line.trim().is_empty())
+            .expect("expected at least one rendered line");
+        assert_eq!(first_non_empty, "codex  │ First line");
     }
 
     #[test]
@@ -3786,11 +4143,10 @@ mod tests {
     }
 
     #[test]
-    fn compute_append_ranges_rejects_in_place_changes() {
-        // When existing lines changed (not just appended), no safe append is possible.
+    fn compute_append_ranges_ignores_replaced_rows_even_with_new_tail() {
         let old = vec![
             "user".to_string(),
-            "assistant (thinking...)".to_string(),
+            format!("assistant {}", WORKING_PLACEHOLDER),
             "tool start".to_string(),
             "tool progress".to_string(),
         ];
@@ -3808,12 +4164,48 @@ mod tests {
     }
 
     #[test]
+    fn compute_append_ranges_ignores_middle_insertions() {
+        let old = vec!["user".to_string(), "codex line".to_string()];
+        let new = vec![
+            "user".to_string(),
+            "claude line".to_string(),
+            "codex line".to_string(),
+        ];
+        assert_eq!(
+            compute_append_ranges(&old, &new),
+            Vec::<(usize, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn compute_append_ranges_ignores_middle_reflow_that_would_split_agent_block() {
+        let old = vec![
+            "claude | previous answer".to_string(),
+            "".to_string(),
+            " user question ".to_string(),
+            "".to_string(),
+            "codex  | next answer".to_string(),
+            "".to_string(),
+        ];
+        let new = vec![
+            "claude | previous answer".to_string(),
+            "       | continued line".to_string(),
+            "".to_string(),
+            " user question ".to_string(),
+            "".to_string(),
+            "codex  | next answer".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            compute_append_ranges(&old, &new),
+            Vec::<(usize, usize)>::new()
+        );
+    }
+
+    #[test]
     fn compute_append_ranges_appends_tail_only() {
         // When old is a strict prefix of new, append the tail.
-        let old = vec![
-            "user".to_string(),
-            "assistant".to_string(),
-        ];
+        let old = vec!["user".to_string(), "assistant".to_string()];
         let new = vec![
             "user".to_string(),
             "assistant".to_string(),
@@ -3821,6 +4213,101 @@ mod tests {
             "tool done".to_string(),
         ];
         assert_eq!(compute_append_ranges(&old, &new), vec![(2, 4)]);
+    }
+
+    #[test]
+    fn compute_append_ranges_ignores_single_line_in_place_growth() {
+        let old = vec!["codex  | hello".to_string()];
+        let new = vec!["codex  | hello world".to_string()];
+        assert_eq!(
+            compute_append_ranges(&old, &new),
+            Vec::<(usize, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn compute_running_append_ranges_appends_from_first_difference() {
+        let old = vec![
+            " user question ".to_string(),
+            "".to_string(),
+            "codex  | hello".to_string(),
+        ];
+        let new = vec![
+            " user question ".to_string(),
+            "".to_string(),
+            "codex  | hello world".to_string(),
+            "       | next line".to_string(),
+        ];
+        assert_eq!(compute_running_append_ranges(&old, &new), vec![(2, 4)]);
+    }
+
+    #[test]
+    fn compute_running_append_ranges_keeps_tail_append_behavior() {
+        let old = vec!["user".to_string(), "assistant".to_string()];
+        let new = vec![
+            "user".to_string(),
+            "assistant".to_string(),
+            "tool start".to_string(),
+        ];
+        assert_eq!(compute_running_append_ranges(&old, &new), vec![(2, 3)]);
+    }
+
+    #[test]
+    fn compute_flush_append_ranges_uses_running_diff_on_running_to_done_transition() {
+        let old = vec![
+            " user question ".to_string(),
+            format!("codex  | {}", WORKING_PLACEHOLDER),
+        ];
+        let new = vec![
+            " user question ".to_string(),
+            "codex  | final answer".to_string(),
+        ];
+        assert_eq!(
+            compute_flush_append_ranges(&old, &new, false, true),
+            vec![(1, 2)]
+        );
+    }
+
+    #[test]
+    fn compute_flush_append_ranges_keeps_stable_done_behavior_after_transition() {
+        let old = vec![
+            " user question ".to_string(),
+            format!("codex  | {}", WORKING_PLACEHOLDER),
+        ];
+        let new = vec![
+            " user question ".to_string(),
+            "codex  | final answer".to_string(),
+        ];
+        assert_eq!(
+            compute_flush_append_ranges(&old, &new, false, false),
+            Vec::<(usize, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn running_streaming_assistant_omits_trailing_blank_separator() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[codex]\nstreaming");
+        app.agent_entries.insert(Provider::Codex, 0);
+        app.running = true;
+
+        let rendered = flatten_lines_to_plain(&app.render_entries_lines(80));
+
+        assert_eq!(rendered, vec!["codex  │ streaming".to_string()]);
+    }
+
+    #[test]
+    fn assistant_blank_content_line_keeps_divider() {
+        let mut app = App::new();
+        app.entries.clear();
+        app.push_entry(EntryKind::Assistant, "[codex]\nline 1\n\nline 3");
+
+        let rendered = flatten_lines_to_plain(&app.render_entries_lines(80));
+
+        assert_eq!(rendered[0], "codex  │ line 1");
+        assert_eq!(rendered[1], "       │  ");
+        assert_eq!(rendered[2], "       │ line 3");
     }
 
     #[test]

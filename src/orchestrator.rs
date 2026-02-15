@@ -28,33 +28,8 @@ pub(crate) fn execute_line(
         return;
     }
 
-    let providers = match &dispatch_target {
-        DispatchTarget::Primary => {
-            if available_providers.contains(&primary_provider) {
-                vec![primary_provider]
-            } else {
-                Vec::new()
-            }
-        }
-        DispatchTarget::All => crate::ordered_providers(primary_provider, &available_providers),
-        DispatchTarget::Provider(provider) => {
-            if available_providers.contains(provider) {
-                vec![*provider]
-            } else {
-                Vec::new()
-            }
-        }
-        DispatchTarget::Providers(targets) => targets
-            .iter()
-            .copied()
-            .filter(|provider| available_providers.contains(provider))
-            .fold(Vec::new(), |mut acc, provider| {
-                if !acc.contains(&provider) {
-                    acc.push(provider);
-                }
-                acc
-            }),
-    };
+    let providers =
+        crate::resolve_dispatch_providers(primary_provider, &available_providers, &dispatch_target);
 
     if providers.is_empty() {
         let msg = match &dispatch_target {
@@ -179,7 +154,10 @@ fn run_tool(parts: Vec<&str>, tx: &Sender<WorkerEvent>) -> std::result::Result<S
         String::new()
     };
 
-    let _ = tx.send(WorkerEvent::Tool(format!("invoke {} {}", tool, input)));
+    let _ = tx.send(WorkerEvent::Tool {
+        provider: None,
+        msg: format!("invoke {} {}", tool, input),
+    });
 
     match tool {
         "echo" => Ok(input),
@@ -199,7 +177,7 @@ fn run_tool(parts: Vec<&str>, tx: &Sender<WorkerEvent>) -> std::result::Result<S
             }
             if !output.stderr.is_empty() {
                 if !text.is_empty() {
-                    text.push_str("\n");
+                    text.push('\n');
                 }
                 text.push_str(&String::from_utf8_lossy(&output.stderr));
             }
