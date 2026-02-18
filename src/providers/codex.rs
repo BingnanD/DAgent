@@ -23,12 +23,26 @@ fn codex_sandbox_mode() -> String {
         .unwrap_or_else(|| "danger-full-access".to_string())
 }
 
+fn codex_command() -> Command {
+    let mut cmd = Command::new("codex");
+    // Avoid inheriting nested Codex runner sandbox state from parent processes.
+    for key in [
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+    ] {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
 fn run_prompt_once(
     prompt: &str,
     approval_policy: &str,
     sandbox_mode: &str,
 ) -> std::result::Result<Output, String> {
-    Command::new("codex")
+    codex_command()
         .arg("--ask-for-approval")
         .arg(approval_policy)
         .stdin(Stdio::null())
@@ -51,7 +65,7 @@ pub(crate) fn run_stream(
     let sandbox_mode = codex_sandbox_mode();
     let prefer_zh = prompt.chars().any(is_cjk_char);
 
-    let mut cmd = Command::new("codex");
+    let mut cmd = codex_command();
     cmd.arg("--ask-for-approval")
         .arg(&approval_policy)
         .arg("exec")
@@ -126,6 +140,52 @@ pub(crate) fn run_stream(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Run codex synchronously (blocking), returning plain text output.
+/// Used for planning/decomposition calls that need a quick text response.
+pub(crate) fn run_sync(prompt: &str, timeout_secs: u64) -> std::result::Result<String, String> {
+    let approval_policy = codex_approval_policy();
+    let sandbox_mode = codex_sandbox_mode();
+
+    let mut cmd = codex_command();
+    cmd.arg("--ask-for-approval")
+        .arg(&approval_policy)
+        .arg("exec")
+        .arg("-s")
+        .arg(&sandbox_mode)
+        .arg("--skip-git-repo-check")
+        .arg(prompt);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("codex sync spawn failed: {e}"))?;
+
+    let pid = child.id();
+    let timeout_handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(timeout_secs));
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    });
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("codex sync wait failed: {e}"))?;
+
+    drop(timeout_handle);
+
+    if !output.status.success() {
+        return Err(format!(
+            "codex sync failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 

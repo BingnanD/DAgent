@@ -18,13 +18,16 @@ DAgent 是一个 Rust 实现的终端多 Agent 协作客户端。
   - `render.rs` + `ui.rs` 完成日志渲染与 composer UI
 - **调度层**：`src/orchestrator.rs`
   - 普通消息：根据 dispatch target 路由到一个或多个 Provider
-  - slash 命令：`/help` `/commands` `/tool ...`
+  - slash 命令：`/help` `/commands` `/tool ...` `/skill ...`
 - **Provider 适配层**：`src/providers/`
   - `claude.rs`：解析 `stream-json`，提取 chunk/tool/progress
   - `codex.rs`：解析 `--json` 事件流，提取 chunk/progress
 - **记忆层**：`src/memory.rs`
   - SQLite + FTS5，按 `session_id` 保存 user/assistant 消息
   - 构建上下文时采用“最近消息 + 检索命中”混合策略
+- **Skills 层**：`src/skills.rs`
+  - 本地 JSON 持久化（`~/.dagent/skills/*.json`）
+  - CRUD、显式引用解析（`@skill:<id>`）、关键词匹配
 
 ---
 
@@ -35,6 +38,8 @@ DAgent 是一个 Rust 实现的终端多 Agent 协作客户端。
 - 实时流式输出与活动日志（tool/progress）
 - 高风险工具调用审批（`/tool bash ...`）
 - 会话记忆检索（`/mem show/find/prune/clear`）
+- Skills 管理与 agent 驱动生成（`/skill create/update`）
+- 对话时自动注入相关 Skills 上下文（显式引用优先）
 - 会话快照持久化与恢复（provider/theme/history/transcript）
 
 ## 架构与数据流
@@ -72,6 +77,7 @@ src/
   main.rs                # 进程入口、终端初始化、provider 检测
   orchestrator.rs        # 调度入口、slash 命令执行、并发 provider 运行
   memory.rs              # SQLite 记忆存储与上下文构建
+  skills.rs              # Skills 存储、CRUD、检索与引用解析
   providers/
     mod.rs               # provider 分发 + primary 自动切换策略
     claude.rs            # Claude CLI 流式解析
@@ -149,6 +155,18 @@ cargo run
 
 `/tool bash`、`/tool shell`、`/tool exec` 会触发高风险审批弹窗（一次允许或永久允许）。
 
+### Skills
+
+- `/skill`：显示 Skills 摘要与用法
+- `/skill list`：列出所有 Skills
+- `/skill show <id>`：查看 Skill 详情
+- `/skill create <name> <intent>`：由 agent 生成并创建 Skill（双 agent 可协同）
+- `/skill update <id> <intent>`：由 agent 更新 Skill
+- `/skill delete <id>`：删除 Skill
+
+在普通对话中可显式引用：`@skill:<id>`。  
+未显式引用时，系统会按关键词自动匹配并注入最多 3 个相关 Skills。
+
 ### Dispatch Override（消息级路由）
 
 - `@claude <task>`
@@ -197,6 +215,8 @@ cargo run
 - `~/.dagent/memory.db`
   - 表：`messages`
   - FTS：`messages_fts`
+- `~/.dagent/skills/*.json`
+  - 每个 Skill 一个 JSON 文件（`id/name/description/content/timestamps`）
 
 恢复逻辑：
 
@@ -251,6 +271,12 @@ cargo run
 
 memory 不可用时回退到 transcript 近邻拼接（`session.rs`）。
 
+随后会尝试注入 Skills 上下文（`session.rs` + `skills.rs`）：
+
+1. 优先解析显式引用（`@skill:<id>`）
+2. 不足时按关键词匹配相关 Skills
+3. 截断后附加到最终 prompt（最多 3 个 Skills）
+
 ## 渲染与 UI 约定
 
 - assistant 行使用固定 label 列：`claude │ ...` / `codex │ ...`
@@ -284,5 +310,6 @@ memory 不可用时回退到 transcript 近邻拼接（`session.rs`）。
 
 - DAgent 依赖外部 CLI；若 `PATH` 无 `claude`/`codex`，仅本地 slash 命令可用。
 - 当前 memory 仅做会话内结构化回忆，不做长期知识库治理。
+- `/skill create|update` 需要至少一个可用 Provider（`claude` 或 `codex`）。
 - `/tool bash` 具有执行风险；默认需要显式审批。
 - transcript append 策略偏保守，优先避免“中间重排导致的错位写入”。

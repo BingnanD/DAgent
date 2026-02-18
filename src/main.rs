@@ -21,6 +21,7 @@ mod app;
 mod memory;
 mod orchestrator;
 mod providers;
+mod skills;
 
 use app::{EntryKind, LogEntry, Provider};
 
@@ -153,6 +154,12 @@ fn default_commands() -> Vec<String> {
         "/mem find spinner".to_string(),
         "/mem prune 200".to_string(),
         "/mem clear".to_string(),
+        "/skill".to_string(),
+        "/skill list".to_string(),
+        "/skill show api-review".to_string(),
+        "/skill create api-review Review API contracts for consistency".to_string(),
+        "/skill update api-review Add strict pagination and auth checks".to_string(),
+        "/skill delete api-review".to_string(),
         "/clear".to_string(),
         "/exit".to_string(),
     ]

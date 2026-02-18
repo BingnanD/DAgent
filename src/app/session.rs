@@ -1,15 +1,93 @@
 use super::*;
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
 impl App {
     pub(super) fn build_contextual_prompt(&self, prompt: &str) -> String {
-        if let Some(memory) = &self.memory {
+        let base = if let Some(memory) = &self.memory {
             if let Ok(text) = memory.build_context(&self.session_id, prompt) {
-                return text;
+                text
+            } else {
+                self.build_contextual_prompt_from_entries(prompt)
+            }
+        } else {
+            self.build_contextual_prompt_from_entries(prompt)
+        };
+        self.inject_skill_context(prompt, &base)
+    }
+
+    fn inject_skill_context(&self, user_prompt: &str, base_prompt: &str) -> String {
+        const SKILL_MAX_COUNT: usize = 3;
+        const SKILL_MAX_CHARS_PER_ITEM: usize = 1400;
+        const SKILL_MAX_TOTAL_CHARS: usize = 3600;
+
+        let Some(store) = &self.skills else {
+            return base_prompt.to_string();
+        };
+
+        let mut selected = Vec::new();
+        let mut seen = HashSet::new();
+
+        if let Ok(explicit) = store.resolve_explicit_refs(user_prompt, SKILL_MAX_COUNT) {
+            for skill in explicit {
+                if seen.insert(skill.id.clone()) {
+                    selected.push(skill);
+                }
             }
         }
-        self.build_contextual_prompt_from_entries(prompt)
+        if selected.len() < SKILL_MAX_COUNT {
+            if let Ok(matched) = store.search_relevant(user_prompt, SKILL_MAX_COUNT) {
+                for skill in matched {
+                    if selected.len() >= SKILL_MAX_COUNT {
+                        break;
+                    }
+                    if seen.insert(skill.id.clone()) {
+                        selected.push(skill);
+                    }
+                }
+            }
+        }
+        if selected.is_empty() {
+            return base_prompt.to_string();
+        }
+
+        let mut used = 0usize;
+        let mut blocks = Vec::new();
+        for skill in selected {
+            let remaining = SKILL_MAX_TOTAL_CHARS.saturating_sub(used);
+            if remaining < 120 {
+                break;
+            }
+            let hard_limit = SKILL_MAX_CHARS_PER_ITEM.min(remaining);
+            let mut content = skill.content.trim().to_string();
+            let truncated = content.chars().count() > hard_limit;
+            if truncated {
+                content = content.chars().take(hard_limit).collect::<String>();
+                content.push_str("\n...");
+            }
+            used += content.chars().count();
+
+            let title = if skill.description.trim().is_empty() {
+                format!("[skill:{}] {}", skill.id, skill.name)
+            } else {
+                format!(
+                    "[skill:{}] {} - {}",
+                    skill.id, skill.name, skill.description
+                )
+            };
+            blocks.push(format!("{title}\n{content}"));
+        }
+
+        if blocks.is_empty() {
+            return base_prompt.to_string();
+        }
+
+        format!(
+            "{base}\n\nRelevant skills loaded by DAgent:\n{skills}\n\nUse these skills when applicable, then solve the user request.",
+            base = base_prompt,
+            skills = blocks.join("\n\n"),
+        )
     }
 
     pub(super) fn build_contextual_prompt_from_entries(&self, prompt: &str) -> String {

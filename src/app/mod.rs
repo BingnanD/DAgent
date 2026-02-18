@@ -20,7 +20,8 @@ use crate::{
     cleaned_assistant_text, cleaned_assistant_text_for_model, default_commands,
     detect_available_providers, execute_line, extract_agent_name, high_risk_check,
     input_cursor_position, kill_pid, memory::MemoryStore, ordered_providers, provider_from_name,
-    providers_label, resolve_dispatch_providers, truncate, DispatchTarget, WORKING_PLACEHOLDER,
+    providers_label, resolve_dispatch_providers, skills::SkillStore, truncate, DispatchTarget,
+    WORKING_PLACEHOLDER,
 };
 
 const COLLAPSED_PASTE_CHAR_THRESHOLD: usize = 800;
@@ -184,6 +185,7 @@ struct App {
     last_status: String,
     session_id: String,
     memory: Option<MemoryStore>,
+    skills: Option<SkillStore>,
     child_pids: Arc<Mutex<Vec<u32>>>,
 
     /// Set by /clear to tell the main loop to wipe the terminal scrollback.
@@ -207,6 +209,11 @@ impl App {
             None
         } else {
             MemoryStore::open_default().ok()
+        };
+        let skills = if cfg!(test) {
+            None
+        } else {
+            SkillStore::open_default().ok()
         };
         let mut app = Self {
             primary_provider,
@@ -252,6 +259,7 @@ impl App {
             last_status: "ready".to_string(),
             session_id: default_session_id(),
             memory,
+            skills,
             child_pids: Arc::new(Mutex::new(Vec::new())),
             needs_screen_clear: false,
             render_generation: 0,

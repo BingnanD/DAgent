@@ -19,6 +19,19 @@ pub(crate) fn run_provider_stream(
     }
 }
 
+/// Run a provider synchronously and return the plain text output.
+/// Used for planning/decomposition calls that need a quick text response.
+pub(crate) fn run_provider_sync(
+    provider: Provider,
+    prompt: &str,
+    timeout_secs: u64,
+) -> std::result::Result<String, String> {
+    match provider {
+        Provider::Claude => claude::run_sync(prompt, timeout_secs),
+        Provider::Codex => codex::run_sync(prompt, timeout_secs),
+    }
+}
+
 pub(crate) fn pick_promoted_provider(
     current: Provider,
     available_providers: &[Provider],

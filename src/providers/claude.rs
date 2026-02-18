@@ -57,7 +57,6 @@ fn run_stream_once(
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
-        .arg("--include-partial-messages")
         .arg("--permission-mode")
         .arg(permission_mode);
     add_allowed_tools_arg(&mut cmd, allowed_tools);
@@ -152,7 +151,6 @@ pub(crate) fn run_stream(
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
-        .arg("--include-partial-messages")
         .arg("--permission-mode")
         .arg(&permission_mode);
     add_allowed_tools_arg(&mut cmd, allowed_tools.as_deref());
@@ -430,6 +428,48 @@ fn extract_progress_event(line: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Run claude synchronously (blocking), returning plain text output.
+/// Used for planning/decomposition calls that need a quick text response.
+pub(crate) fn run_sync(prompt: &str, timeout_secs: u64) -> std::result::Result<String, String> {
+    let permission_mode = claude_permission_mode();
+    let mut cmd = Command::new("claude");
+    cmd.arg("--print")
+        .arg("--permission-mode")
+        .arg(&permission_mode)
+        .arg("-p")
+        .arg(prompt);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("claude sync spawn failed: {e}"))?;
+
+    let pid = child.id();
+    let timeout_handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(timeout_secs));
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    });
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("claude sync wait failed: {e}"))?;
+
+    drop(timeout_handle);
+
+    if !output.status.success() {
+        return Err(format!(
+            "claude sync failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn extract_fallback_text(line: &str) -> Option<String> {
