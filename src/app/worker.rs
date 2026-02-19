@@ -1,7 +1,52 @@
 use super::*;
 use std::time::Instant;
 
+const COORDINATION_TRACE_PREFIX: &str = "[coord] ";
+
 impl App {
+    fn should_emit_collaboration_trace(&self) -> bool {
+        self.agent_entries.len() >= 2
+    }
+
+    fn push_coordination_trace(&mut self, msg: &str) {
+        let msg = msg.trim();
+        if msg.is_empty() {
+            return;
+        }
+        let text = if msg.starts_with(COORDINATION_TRACE_PREFIX) {
+            msg.to_string()
+        } else {
+            format!("{COORDINATION_TRACE_PREFIX}{msg}")
+        };
+        if !self.last_system_entry_is(&text) {
+            self.push_entry(EntryKind::System, text);
+        }
+    }
+
+    fn append_agent_progress_line(&mut self, provider: Provider, msg: &str) {
+        let msg = msg.trim();
+        if msg.is_empty() {
+            return;
+        }
+        let progress_line = format!("{TRANSCRIPT_PROGRESS_PREFIX}{msg}");
+        if let Some(i) = self.agent_entries.get(&provider).copied() {
+            if let Some(entry) = self.entries.get_mut(i) {
+                let already_last_line = entry
+                    .text
+                    .lines()
+                    .last()
+                    .is_some_and(|line| line.trim_end() == progress_line);
+                if already_last_line {
+                    return;
+                }
+                if !entry.text.ends_with('\n') {
+                    entry.text.push('\n');
+                }
+                entry.text.push_str(&progress_line);
+            }
+        }
+    }
+
     pub(super) fn interrupt_running_task(&mut self, reason: &str) {
         if !self.running {
             return;
@@ -59,6 +104,10 @@ impl App {
                         self.agent_tool_event.insert(provider, event_msg.clone());
                         self.last_tool_event = event_msg;
                         self.last_status = format!("{} working", provider.as_str());
+                        if self.should_emit_collaboration_trace() {
+                            self.append_agent_progress_line(provider, "started");
+                            render_changed = true;
+                        }
                     }
                     Ok(WorkerEvent::AgentChunk { provider, chunk }) => {
                         processed_any = true;
@@ -159,13 +208,25 @@ impl App {
                         self.agent_tool_event.insert(provider, event_msg.clone());
                         self.last_tool_event = event_msg;
                         self.last_status = format!("{} done", provider.as_str());
+                        if self.should_emit_collaboration_trace() {
+                            let progress = format!(
+                                "completed ({:02}:{:02})",
+                                elapsed_secs / 60,
+                                elapsed_secs % 60
+                            );
+                            self.append_agent_progress_line(provider, &progress);
+                        }
                     }
                     Ok(WorkerEvent::Done(final_text)) => {
                         processed_any = true;
                         render_changed = true;
                         let elapsed_secs = self.running_elapsed_secs();
                         self.finished_elapsed_secs = elapsed_secs;
-                        self.finished_provider_name = self.primary_provider.as_str().to_string();
+                        self.finished_provider_name = if self.run_target.trim().is_empty() {
+                            self.primary_provider.as_str().to_string()
+                        } else {
+                            self.run_target.clone()
+                        };
                         if self.assistant_idx.is_some() {
                             if !self.stream_had_chunk {
                                 let final_text = final_text.trim();
@@ -233,9 +294,12 @@ impl App {
                         self.last_tool_event = msg.clone();
                         self.last_status = format!("tool: {}", truncate(&msg, 48));
                         // Tool events only go to the live activity area (not transcript).
-                        self.activity_log.push_back(msg);
+                        self.activity_log.push_back(msg.clone());
                         while self.activity_log.len() > MAX_ACTIVITY_LOG_LINES {
                             self.activity_log.pop_front();
+                        }
+                        if provider.is_none() && self.should_emit_collaboration_trace() {
+                            self.push_coordination_trace(&msg);
                         }
                         render_changed = true;
                     }
@@ -245,6 +309,10 @@ impl App {
                         if msg.trim().is_empty() {
                             continue;
                         }
+                        let progress_unchanged = self
+                            .agent_tool_event
+                            .get(&provider)
+                            .is_some_and(|prev| prev == &msg);
                         self.agent_tool_event.insert(provider, msg.clone());
                         self.last_tool_event = msg.clone();
                         // Add progress to activity log.
@@ -254,6 +322,10 @@ impl App {
                         }
                         self.last_status =
                             format!("progress {}: {}", provider.as_str(), truncate(&msg, 42));
+                        if self.should_emit_collaboration_trace() && !progress_unchanged {
+                            self.append_agent_progress_line(provider, &msg);
+                            render_changed = true;
+                        }
                     }
                     Ok(WorkerEvent::PromotePrimary { to, reason }) => {
                         processed_any = true;

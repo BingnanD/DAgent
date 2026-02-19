@@ -37,7 +37,6 @@ pub(crate) const TRANSCRIPT_PROGRESS_PREFIX: &str = "[progress] ";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DispatchTarget {
     Primary,
-    All,
     Provider(Provider),
     Providers(Vec<Provider>),
 }
@@ -160,6 +159,9 @@ fn default_commands() -> Vec<String> {
         "/skill create api-review Review API contracts for consistency".to_string(),
         "/skill update api-review Add strict pagination and auth checks".to_string(),
         "/skill delete api-review".to_string(),
+        "/workspace".to_string(),
+        "/workspace ..".to_string(),
+        "/workspace ~/".to_string(),
         "/clear".to_string(),
         "/exit".to_string(),
     ]
@@ -331,7 +333,6 @@ fn resolve_dispatch_providers(
                 Vec::new()
             }
         }
-        DispatchTarget::All => ordered_providers(primary_provider, available_providers),
         DispatchTarget::Provider(provider) => {
             if available_providers.contains(provider) {
                 vec![*provider]

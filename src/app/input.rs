@@ -155,7 +155,7 @@ impl App {
     }
 
     pub(super) fn agent_hint_options(&self) -> Vec<String> {
-        let mut options = vec!["@all".to_string()];
+        let mut options = Vec::new();
         for provider in ordered_providers(self.primary_provider, &self.available_providers) {
             options.push(format!("@{}", provider.as_str()));
         }
@@ -168,7 +168,83 @@ impl App {
         options
     }
 
+    /// Returns directory completion hints when the user is typing `/workspace <path>`.
+    pub(super) fn workspace_path_hints(&self) -> Vec<String> {
+        let cmd_prefix = "/workspace ";
+        if !self.input.starts_with(cmd_prefix) {
+            return Vec::new();
+        }
+        let partial = &self.input[cmd_prefix.len()..];
+
+        // Expand leading ~ to $HOME for filesystem access
+        let expanded = if partial == "~" {
+            std::env::var("HOME").unwrap_or_else(|_| partial.to_string())
+        } else if let Some(rest) = partial.strip_prefix("~/") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{}/{}", home, rest)
+        } else {
+            partial.to_string()
+        };
+
+        // Split into (directory-to-list, name-filter, prefix-to-keep-in-hint)
+        let (dir_to_list, filter, hint_base) = if partial.is_empty() || expanded.ends_with('/') {
+            (
+                if expanded.is_empty() { ".".to_string() } else { expanded.clone() },
+                String::new(),
+                partial.to_string(),
+            )
+        } else {
+            let path = std::path::Path::new(&expanded);
+            let dir = path
+                .parent()
+                .map(|p| {
+                    let s = p.to_str().unwrap_or("");
+                    if s.is_empty() { ".".to_string() } else { p.display().to_string() }
+                })
+                .unwrap_or_else(|| ".".to_string());
+            let name_filter = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Reconstruct the hint base using the original (un-expanded) partial
+            let orig_path = std::path::Path::new(partial);
+            let orig_parent = orig_path
+                .parent()
+                .and_then(|p| p.to_str())
+                .map(|s| if s.is_empty() { String::new() } else { format!("{}/", s) })
+                .unwrap_or_default();
+
+            (dir, name_filter, orig_parent)
+        };
+
+        let Ok(entries) = std::fs::read_dir(&dir_to_list) else {
+            return Vec::new();
+        };
+
+        let mut dirs: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .filter(|name| !name.starts_with('.'))
+            .filter(|name| name.to_lowercase().starts_with(&filter.to_lowercase()))
+            .collect();
+        dirs.sort();
+
+        dirs.iter()
+            .map(|d| format!("{}{}{}/", cmd_prefix, hint_base, d))
+            .take(6)
+            .collect()
+    }
+
     pub(super) fn inline_hints(&self) -> Vec<String> {
+        // Workspace directory completion takes precedence over slash hints
+        let ws_hints = self.workspace_path_hints();
+        if !ws_hints.is_empty() {
+            return ws_hints;
+        }
+
         if self.input.starts_with("/") {
             self.slash_hints()
         } else if self.active_mention_span().is_some() {
@@ -515,7 +591,7 @@ impl App {
             KeyCode::Tab => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     self.cycle_inline_hint_prev();
-                } else {
+                } else if !self.apply_selected_inline_hint() {
                     self.cycle_inline_hint_next();
                 }
             }
@@ -523,8 +599,15 @@ impl App {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     self.insert_char('\n');
                 } else {
-                    let hint_count = self.inline_hints().len();
-                    let should_apply_hint = hint_count > 1 || self.active_mention_span().is_some();
+                    let hints = self.inline_hints();
+                    let hint_count = hints.len();
+                    let idx = self.slash_hint_idx.min(hint_count.saturating_sub(1));
+                    let selected_hint = hints.get(idx).cloned();
+                    // Apply hint when: multiple hints exist (ambiguous), active mention needs
+                    // completing, or single hint differs from current input (partial completion).
+                    let should_apply_hint = hint_count > 1
+                        || self.active_mention_span().is_some()
+                        || selected_hint.as_deref().map(|h| h != self.input.as_str()).unwrap_or(false);
                     if should_apply_hint && self.apply_selected_inline_hint() {
                         return;
                     }

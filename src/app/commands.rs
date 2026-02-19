@@ -90,6 +90,12 @@ impl App {
             return;
         }
 
+        if let Some(rest) = line.strip_prefix("/workspace") {
+            self.handle_workspace_change(rest.trim());
+            self.clear_input_buffer();
+            return;
+        }
+
         self.history.push(typed_line.clone());
         self.history_pos = None;
 
@@ -109,9 +115,6 @@ impl App {
                     "primary agent {} not available on PATH",
                     self.primary_provider.as_str()
                 ),
-                DispatchTarget::All => {
-                    "no available agent found (need claude and/or codex on PATH)".to_string()
-                }
                 DispatchTarget::Provider(provider) => {
                     format!("{} not available on PATH", provider.as_str())
                 }
@@ -268,6 +271,46 @@ impl App {
             EntryKind::System,
             format!("theme set to {}", self.theme.as_str()),
         );
+    }
+
+    pub(super) fn handle_workspace_change(&mut self, path: &str) {
+        if path.is_empty() {
+            self.push_entry(
+                EntryKind::System,
+                format!("workspace: {}", self.current_workspace),
+            );
+            return;
+        }
+
+        // Expand leading ~ to $HOME
+        let expanded = if path == "~" {
+            std::env::var("HOME").unwrap_or_else(|_| path.to_string())
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{}/{}", home, rest)
+        } else {
+            path.to_string()
+        };
+
+        match std::env::set_current_dir(&expanded) {
+            Ok(()) => {
+                let new_cwd = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| expanded.clone());
+                self.current_workspace = new_cwd.clone();
+                self.push_entry(
+                    EntryKind::System,
+                    format!("workspace: {}", new_cwd),
+                );
+                self.last_status = format!("workspace {}", new_cwd);
+            }
+            Err(err) => {
+                self.push_entry(
+                    EntryKind::Error,
+                    format!("workspace: {}", err),
+                );
+            }
+        }
     }
 
     pub(super) fn handle_memory_command(&mut self, args: &str) {

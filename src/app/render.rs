@@ -367,7 +367,6 @@ impl App {
     }
 
     /// Render all entries except those at the given indices (streaming assistant entries).
-    #[allow(dead_code)]
     pub(super) fn render_entries_lines_filtered(
         &self,
         width: u16,
@@ -636,6 +635,43 @@ impl App {
 
     pub(super) fn render_log_lines_inner(&self, width: u16) -> Vec<Line<'static>> {
         self.render_entries_lines(width)
+    }
+
+    /// Render only the currently-active streaming entries for the live TUI area.
+    /// Returns empty when not running or no real content has arrived yet.
+    pub(super) fn render_active_streaming_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if !self.running {
+            return Vec::new();
+        }
+
+        let active_set: HashSet<usize> = {
+            let mut s: HashSet<usize> = self.agent_entries.values().copied().collect();
+            if let Some(idx) = self.assistant_idx {
+                s.insert(idx);
+            }
+            s
+        };
+
+        if active_set.is_empty() {
+            return Vec::new();
+        }
+
+        // Only show once at least one active entry has real (non-placeholder) content.
+        let has_content = active_set.iter().any(|&idx| {
+            self.entries.get(idx).is_some_and(|entry| {
+                matches!(entry.kind, EntryKind::Assistant)
+                    && !cleaned_assistant_text(entry).trim().is_empty()
+            })
+        });
+        if !has_content {
+            return Vec::new();
+        }
+
+        // Render only the active entries by skipping everything else.
+        let skip: HashSet<usize> = (0..self.entries.len())
+            .filter(|i| !active_set.contains(i))
+            .collect();
+        self.render_entries_lines_filtered(width, &skip)
     }
 }
 

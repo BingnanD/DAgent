@@ -34,7 +34,7 @@ DAgent 是一个 Rust 实现的终端多 Agent 协作客户端。
 ## 核心能力
 
 - 单 Agent 对话（primary provider）
-- 多 Agent 并行分发（`@all` 或 `@claude @codex`）
+- 多 Agent 并行分发（`@claude @codex`）
 - 实时流式输出与活动日志（tool/progress）
 - 高风险工具调用审批（`/tool bash ...`）
 - 会话记忆检索（`/mem show/find/prune/clear`）
@@ -171,13 +171,11 @@ cargo run
 
 - `@claude <task>`
 - `@codex <task>`
-- `@all <task>`
 - `@claude @codex <task>`
 
 实现细节：
 
 - `@mention` 可出现在句子中间，会被解析并从 prompt 文本中移除
-- 同时出现 `@all` 时，优先按 `@all` 广播
 
 ### 键位
 
@@ -205,6 +203,7 @@ cargo run
 关键约束：
 
 - `Tool` / `Progress` 默认只进活动区，不写入 transcript
+  - 多 Agent 协同运行时，协调事件与去重后的进度会以 `[coord]` / `[progress]` 形式写入 transcript
 - `AgentChunk` 才会持续填充 assistant 面板
 - 运行结束后 assistant 文本才会写入 memory
 
@@ -229,6 +228,8 @@ cargo run
   - composer inline viewport 高度（默认约 12 行）
 - `DAGENT_RESTORE_TRANSCRIPT`
   - `1/true/yes/on` 时启动恢复 transcript
+- `DAGENT_DECOMPOSE`
+  - 多 Agent 任务分解开关（默认开启）；设为 `0/false/no/off` 时跳过分解，直接并行分发原始任务
 - `DAGENT_CLAUDE_PERMISSION_MODE`
   - Claude permission mode（默认 `bypassPermissions`，root 下自动回退 `acceptEdits`）
 - `DAGENT_CLAUDE_ALLOWED_TOOLS`
@@ -292,7 +293,7 @@ memory 不可用时回退到 transcript 近邻拼接（`session.rs`）。
 - 滚动与 autoscroll 切换
 - tool/progress 不污染 transcript
 - 多 Agent chunk 定向写入
-- dispatch override 解析（`@all` 优先级等）
+- dispatch override 解析（多 agent mention 组合）
 - streaming flush 差分与渲染稳定性
 - 大段粘贴折叠与派发前还原
 - memory backend 不可用路径

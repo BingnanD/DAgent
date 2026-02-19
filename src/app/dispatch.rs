@@ -27,17 +27,13 @@ pub(super) fn parse_dispatch_override(
         return Err(format!("usage: {} <task>", mentions.join(" ")));
     }
 
-    if mentions.contains(&"@all") {
-        return Ok(Some((DispatchTarget::All, prompt)));
-    }
-
     let mut providers = Vec::new();
     let mut seen = HashSet::new();
     for mention in mentions {
         let name = mention.trim_start_matches("@");
         let Some(provider) = provider_from_name(name) else {
             return Err(format!(
-                "unknown dispatch target {}; use @claude, @codex or @all",
+                "unknown dispatch target {}; use @claude or @codex",
                 mention
             ));
         };
@@ -53,7 +49,7 @@ pub(super) fn parse_dispatch_override(
     };
 
     if matches!(target, DispatchTarget::Providers(ref ps) if ps.is_empty()) {
-        return Err("usage: @claude <task> | @codex <task> | @all <task>".to_string());
+        return Err("usage: @claude <task> | @codex <task>".to_string());
     }
 
     Ok(Some((target, prompt)))

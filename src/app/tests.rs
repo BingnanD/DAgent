@@ -94,7 +94,7 @@ fn tool_events_do_not_enter_transcript_entries() {
 }
 
 #[test]
-fn progress_events_do_not_enter_transcript_entries() {
+fn coordination_tool_events_enter_transcript_entries_in_multi_agent_run() {
     let mut app = App::new();
     app.entries.clear();
     app.push_entry(
@@ -108,8 +108,40 @@ fn progress_events_do_not_enter_transcript_entries() {
     app.agent_entries.insert(Provider::Claude, 0);
     app.agent_entries.insert(Provider::Codex, 1);
     app.running = true;
-    let before_claude = app.entries[0].text.clone();
-    let before_codex = app.entries[1].text.clone();
+    let before_len = app.entries.len();
+
+    let (tx, rx) = unbounded::<WorkerEvent>();
+    app.rx = Some(rx);
+    tx.send(WorkerEvent::Tool {
+        provider: None,
+        msg: "task decomposed, dispatching to agents...".to_string(),
+    })
+    .expect("send coordination tool event");
+
+    assert!(app.poll_worker());
+    assert_eq!(app.entries.len(), before_len + 1);
+    let last = app.entries.last().expect("last entry");
+    assert!(matches!(last.kind, EntryKind::System));
+    assert!(last
+        .text
+        .contains("[coord] task decomposed, dispatching to agents..."));
+}
+
+#[test]
+fn progress_events_enter_transcript_entries_for_multi_agent_run() {
+    let mut app = App::new();
+    app.entries.clear();
+    app.push_entry(
+        EntryKind::Assistant,
+        format!("[claude]\n{}", WORKING_PLACEHOLDER),
+    );
+    app.push_entry(
+        EntryKind::Assistant,
+        format!("[codex]\n{}", WORKING_PLACEHOLDER),
+    );
+    app.agent_entries.insert(Provider::Claude, 0);
+    app.agent_entries.insert(Provider::Codex, 1);
+    app.running = true;
 
     let (tx, rx) = unbounded::<WorkerEvent>();
     app.rx = Some(rx);
@@ -125,13 +157,52 @@ fn progress_events_do_not_enter_transcript_entries() {
     .expect("send codex progress");
 
     assert!(app.poll_worker());
-    assert_eq!(app.entries[0].text, before_claude);
-    assert_eq!(app.entries[1].text, before_codex);
+    assert!(app.entries[0].text.contains("[progress] thinking..."));
+    assert!(app.entries[1].text.contains("[progress] drafting response"));
     assert!(app.activity_log.iter().any(|item| item == "thinking..."));
     assert!(app
         .activity_log
         .iter()
         .any(|item| item == "drafting response"));
+}
+
+#[test]
+fn duplicate_progress_events_are_deduped_in_multi_agent_transcript() {
+    let mut app = App::new();
+    app.entries.clear();
+    app.push_entry(
+        EntryKind::Assistant,
+        format!("[claude]\n{}", WORKING_PLACEHOLDER),
+    );
+    app.push_entry(
+        EntryKind::Assistant,
+        format!("[codex]\n{}", WORKING_PLACEHOLDER),
+    );
+    app.agent_entries.insert(Provider::Claude, 0);
+    app.agent_entries.insert(Provider::Codex, 1);
+    app.running = true;
+
+    let (tx, rx) = unbounded::<WorkerEvent>();
+    app.rx = Some(rx);
+    tx.send(WorkerEvent::Progress {
+        provider: Provider::Claude,
+        msg: "thinking...".to_string(),
+    })
+    .expect("send first progress");
+    tx.send(WorkerEvent::Progress {
+        provider: Provider::Claude,
+        msg: "thinking...".to_string(),
+    })
+    .expect("send duplicate progress");
+
+    assert!(app.poll_worker());
+    assert_eq!(
+        app.entries[0]
+            .text
+            .matches("[progress] thinking...")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -198,7 +269,11 @@ fn agent_chunk_marks_stream_had_chunk() {
 }
 
 #[test]
-fn running_flush_skips_placeholder_until_first_stream_chunk() {
+fn running_flush_skips_active_streaming_entry() {
+    // Active streaming entries (in agent_entries) are always excluded from
+    // scrollback flushes while running, regardless of whether chunks have
+    // arrived. This prevents append-only scrollback from accumulating
+    // duplicate partial-content lines on each frame.
     let mut app = App::new();
     app.entries.clear();
     app.push_entry(EntryKind::User, "test");
@@ -210,6 +285,7 @@ fn running_flush_skips_placeholder_until_first_stream_chunk() {
     app.agent_had_chunk.insert(Provider::Claude, false);
     app.running = true;
 
+    // Before any chunk: placeholder entry is excluded from flush.
     let before = app
         .running_flush_log_lines(80)
         .into_iter()
@@ -217,6 +293,9 @@ fn running_flush_skips_placeholder_until_first_stream_chunk() {
         .collect::<Vec<_>>();
     assert!(!before.iter().any(|line| line.contains(WORKING_PLACEHOLDER)));
 
+    // After first chunk arrives: entry still excluded while actively streaming.
+    // Content is visible in the TUI viewport; it will be flushed to scrollback
+    // once the run completes and clear_running_state() removes it from agent_entries.
     app.agent_had_chunk.insert(Provider::Claude, true);
     app.entries[1].text = "[claude]\nfirst output line".to_string();
 
@@ -225,7 +304,17 @@ fn running_flush_skips_placeholder_until_first_stream_chunk() {
         .into_iter()
         .map(|line| flatten_line_to_plain(&line))
         .collect::<Vec<_>>();
-    assert!(after.iter().any(|line| line.contains("first output line")));
+    assert!(!after.iter().any(|line| line.contains("first output line")));
+
+    // Once the run ends (agent_entries cleared), the entry is included.
+    app.running = false;
+    app.agent_entries.clear();
+    let done = app
+        .running_flush_log_lines(80)
+        .into_iter()
+        .map(|line| flatten_line_to_plain(&line))
+        .collect::<Vec<_>>();
+    assert!(done.iter().any(|line| line.contains("first output line")));
 }
 
 #[test]
@@ -245,6 +334,23 @@ fn agent_done_sets_elapsed_only_for_active_entry() {
     assert!(app.poll_worker());
     assert_eq!(app.entries[0].elapsed_secs, Some(7));
     assert!(app.entries[1].elapsed_secs.is_some());
+}
+
+#[test]
+fn done_uses_run_target_for_finished_provider_label() {
+    let mut app = App::new();
+    app.primary_provider = Provider::Codex;
+    app.running = true;
+    app.run_started_at = Some(Instant::now());
+    app.run_target = "claude".to_string();
+
+    let (tx, rx) = unbounded::<WorkerEvent>();
+    app.rx = Some(rx);
+    tx.send(WorkerEvent::Done(String::new()))
+        .expect("send done event");
+
+    assert!(app.poll_worker());
+    assert_eq!(app.finished_provider_name, "claude");
 }
 
 #[test]
@@ -426,12 +532,9 @@ fn parse_dispatch_override_multiple_agents() {
 }
 
 #[test]
-fn parse_dispatch_override_all_wins() {
-    let parsed = parse_dispatch_override("@claude @all investigate")
-        .expect("parse should succeed")
-        .expect("dispatch override should exist");
-    assert_eq!(parsed.0, DispatchTarget::All);
-    assert_eq!(parsed.1, "investigate");
+fn parse_dispatch_override_all_is_unknown_target() {
+    let err = parse_dispatch_override("@claude @all investigate").expect_err("should error");
+    assert!(err.contains("unknown dispatch target"));
 }
 
 #[test]

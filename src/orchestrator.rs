@@ -45,9 +45,6 @@ pub(crate) fn execute_line(
                     primary_provider.as_str()
                 )
             }
-            DispatchTarget::All => {
-                "no available agent found (need claude and/or codex on PATH)".to_string()
-            }
             DispatchTarget::Provider(provider) => {
                 format!("{} not available on PATH", provider.as_str())
             }
@@ -126,6 +123,10 @@ pub(crate) fn execute_line(
                 let _ = tx.send(WorkerEvent::Tool {
                     provider: None,
                     msg: "task decomposed, dispatching to agents...".to_string(),
+                });
+                let _ = tx.send(WorkerEvent::Tool {
+                    provider: None,
+                    msg: format_decomposition_summary(&tasks, &providers),
                 });
                 let mut prompts = HashMap::new();
                 for &p in &providers {
@@ -784,7 +785,6 @@ fn help_text() -> String {
         "dispatch override",
         "  @claude <task>  message to claude",
         "  @codex <task>   message to codex",
-        "  @all <task>     single message to all agents",
         "  @claude @codex <task>  collaborate with selected agents",
         "",
         "keys",
@@ -807,15 +807,17 @@ fn is_quota_or_limit_error(err: &str) -> bool {
         || t.contains("insufficient credits")
 }
 
+fn parse_enabled_flag(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 fn is_decomposition_enabled() -> bool {
     std::env::var("DAGENT_DECOMPOSE")
         .ok()
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "no" | "off"
-            )
-        })
+        .map(|v| parse_enabled_flag(&v))
         .unwrap_or(true)
 }
 
@@ -916,6 +918,21 @@ fn parse_decomposition(
     }
 
     Some(tasks)
+}
+
+fn format_decomposition_summary(
+    tasks: &HashMap<Provider, String>,
+    providers: &[Provider],
+) -> String {
+    let mut lines = vec!["multi-agent plan:".to_string()];
+    for provider in providers {
+        if let Some(task) = tasks.get(provider) {
+            let single_line = task.split_whitespace().collect::<Vec<_>>().join(" ");
+            let preview = crate::truncate(&single_line, 180);
+            lines.push(format!("- {}: {}", provider.as_str(), preview));
+        }
+    }
+    lines.join("\n")
 }
 
 fn build_agent_prompt(
@@ -1036,6 +1053,32 @@ mod tests {
         let response = "[claude]\n\n[codex]\nDo something";
         let providers = vec![Provider::Claude, Provider::Codex];
         assert!(parse_decomposition(response, &providers).is_none());
+    }
+
+    #[test]
+    fn format_decomposition_summary_lists_each_provider() {
+        let providers = vec![Provider::Claude, Provider::Codex];
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            Provider::Claude,
+            "Analyze architecture and identify risks".to_string(),
+        );
+        tasks.insert(Provider::Codex, "Implement fixes and add tests".to_string());
+
+        let summary = format_decomposition_summary(&tasks, &providers);
+        assert!(summary.contains("multi-agent plan:"));
+        assert!(summary.contains("- claude: Analyze architecture and identify risks"));
+        assert!(summary.contains("- codex: Implement fixes and add tests"));
+    }
+
+    #[test]
+    fn parse_enabled_flag_supports_common_false_values() {
+        assert!(!parse_enabled_flag("0"));
+        assert!(!parse_enabled_flag("false"));
+        assert!(!parse_enabled_flag("no"));
+        assert!(!parse_enabled_flag("off"));
+        assert!(parse_enabled_flag("true"));
+        assert!(parse_enabled_flag("1"));
     }
 
     #[test]

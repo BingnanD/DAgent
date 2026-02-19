@@ -21,7 +21,7 @@ use crate::{
     detect_available_providers, execute_line, extract_agent_name, high_risk_check,
     input_cursor_position, kill_pid, memory::MemoryStore, ordered_providers, provider_from_name,
     providers_label, resolve_dispatch_providers, skills::SkillStore, truncate, DispatchTarget,
-    WORKING_PLACEHOLDER,
+    TRANSCRIPT_PROGRESS_PREFIX, WORKING_PLACEHOLDER,
 };
 
 const COLLAPSED_PASTE_CHAR_THRESHOLD: usize = 800;
@@ -188,6 +188,9 @@ struct App {
     skills: Option<SkillStore>,
     child_pids: Arc<Mutex<Vec<u32>>>,
 
+    /// Current working directory shown in the status bar and updated by /workspace.
+    current_workspace: String,
+
     /// Set by /clear to tell the main loop to wipe the terminal scrollback.
     needs_screen_clear: bool,
 
@@ -261,6 +264,9 @@ impl App {
             memory,
             skills,
             child_pids: Arc::new(Mutex::new(Vec::new())),
+            current_workspace: std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| ".".to_string()),
             needs_screen_clear: false,
             render_generation: 0,
             render_cache: RenderCache::new(),
@@ -391,30 +397,21 @@ impl App {
     }
 
     /// Render transcript lines for running flushes.
-    /// This includes streaming rows so users can see in-progress output.
+    /// Active streaming entries are excluded from scrollback flushes because
+    /// scrollback is append-only — re-flushing a growing line produces duplicate
+    /// accumulated lines. Streaming content remains visible in the TUI viewport.
     fn running_flush_log_lines(&self, width: u16) -> Vec<Line<'static>> {
         if !self.running {
             return self.render_entries_lines(width);
         }
 
-        // Scrollback writes are append-only; if we flush a placeholder row now,
-        // the first real chunk can only be appended on a new line later.
-        // Skip placeholder-only active assistant entries until content arrives.
-        let mut active_entry_indices: HashSet<usize> =
-            self.agent_entries.values().copied().collect();
+        // Skip ALL currently-active assistant entries while streaming.
+        // They are shown live in the TUI viewport and will be flushed to
+        // scrollback once the run completes and clear_running_state() fires.
+        let mut skip_indices: HashSet<usize> = self.agent_entries.values().copied().collect();
         if let Some(idx) = self.assistant_idx {
-            active_entry_indices.insert(idx);
+            skip_indices.insert(idx);
         }
-        let skip_indices = active_entry_indices
-            .into_iter()
-            .filter(|idx| {
-                self.entries.get(*idx).is_some_and(|entry| {
-                    matches!(entry.kind, EntryKind::Assistant)
-                        && entry.text.contains(WORKING_PLACEHOLDER)
-                        && cleaned_assistant_text(entry).trim().is_empty()
-                })
-            })
-            .collect::<HashSet<_>>();
 
         if skip_indices.is_empty() {
             self.render_entries_lines(width)

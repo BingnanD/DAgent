@@ -17,6 +17,23 @@ const ACTIVITY_VERTICAL_INSET: u16 = 0;
 const TRANSCRIPT_ACTIVITY_GAP_ROWS: u16 = 1;
 const MAX_SPINNER_ROWS_PER_AGENT: u16 = 6;
 
+/// Abbreviate a path for display: replace $HOME prefix with `~`.
+fn abbrev_path(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            if path == home {
+                return "~".to_string();
+            }
+            if let Some(rest) = path.strip_prefix(&home) {
+                if rest.starts_with('/') {
+                    return format!("~{}", rest);
+                }
+            }
+        }
+    }
+    path.to_string()
+}
+
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let frame_area = f.area();
     let theme = app.theme_palette();
@@ -61,7 +78,29 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         1u16.saturating_add(INPUT_VERTICAL_INSET)
     };
     let status_h: u16 = 1;
-    let fixed_rows = transcript_activity_gap_h + activity_h + hints_h + status_h;
+
+    // Live transcript: streaming content rendered in the TUI viewport so it
+    // can be redrawn in-place each frame without touching append-only scrollback.
+    let live_lines = if app.running {
+        app.render_active_streaming_lines(frame_area.width.max(1))
+    } else {
+        Vec::new()
+    };
+    let live_content_rows = if live_lines.is_empty() {
+        0u16
+    } else {
+        Paragraph::new(Text::from(live_lines.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(frame_area.width.max(1)) as u16
+    };
+    let max_live_h = (frame_area.height * 3 / 5).max(3);
+    let live_h = if live_content_rows > 0 {
+        live_content_rows.min(max_live_h)
+    } else {
+        0
+    };
+
+    let fixed_rows = live_h + transcript_activity_gap_h + activity_h + hints_h + status_h;
     let max_input_height = frame_area.height.saturating_sub(fixed_rows).max(3);
     let input_height = app
         .input_height(composer_width, prompt_width)
@@ -70,9 +109,18 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let prompt_style = theme.prompt_style();
     let input_lines = build_input_lines(app, prompt_prefix, prompt_style, theme, composer_width);
 
-    // Composer-only viewport: transcript is appended above via insert_before.
-    // Keep one blank separator row between transcript and activity/spinner panel.
+    // Layout (top to bottom in the TUI viewport):
+    //   [live transcript]  ← streaming content, redrawn each frame
+    //   [gap]
+    //   [activity / spinner]
+    //   [input]
+    //   [hints]
+    //   [status]
+    // Completed transcript is appended above the viewport via insert_before.
     let mut constraints = Vec::new();
+    if live_h > 0 {
+        constraints.push(Constraint::Length(live_h));
+    }
     if transcript_activity_gap_h > 0 {
         constraints.push(Constraint::Length(transcript_activity_gap_h));
     }
@@ -91,6 +139,13 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         .split(frame_area);
 
     let mut section_idx = 0usize;
+    let live_chunk = if live_h > 0 {
+        let c = chunks[section_idx];
+        section_idx += 1;
+        Some(c)
+    } else {
+        None
+    };
     if transcript_activity_gap_h > 0 {
         section_idx += 1;
     }
@@ -111,6 +166,44 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         None
     };
     let status_chunk = chunks[section_idx];
+
+    // Live transcript: streaming content shown in-place in the TUI viewport.
+    // The label line (e.g. "claude │ ...") is pinned as a sticky header so it
+    // stays visible even when the body content grows and starts scrolling.
+    if let Some(area) = live_chunk {
+        if !live_lines.is_empty() {
+            let header_line = live_lines[0].clone();
+            let body_lines = live_lines[1..].to_vec();
+
+            if area.height <= 1 || body_lines.is_empty() {
+                // Not enough room for a split — just show the header.
+                let para = Paragraph::new(Text::from(vec![header_line]))
+                    .wrap(Wrap { trim: false });
+                f.render_widget(para, area);
+            } else {
+                let split = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(1)])
+                    .split(area);
+
+                // Sticky label header — never scrolled away.
+                let header_para = Paragraph::new(Text::from(vec![header_line]))
+                    .wrap(Wrap { trim: false });
+                f.render_widget(header_para, split[0]);
+
+                // Scrollable body — always shows the latest content at the bottom.
+                let w = frame_area.width.max(1);
+                let body_rows = Paragraph::new(Text::from(body_lines.clone()))
+                    .wrap(Wrap { trim: false })
+                    .line_count(w) as u16;
+                let body_scroll = body_rows.saturating_sub(split[1].height);
+                let body_para = Paragraph::new(Text::from(body_lines))
+                    .wrap(Wrap { trim: false })
+                    .scroll((body_scroll, 0));
+                f.render_widget(body_para, split[1]);
+            }
+        }
+    }
 
     // Real-time activity area between transcript and composer.
     if let Some(area) = activity_chunk {
@@ -173,11 +266,13 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 
     // Status bar
     let cancel_hint = if app.running { " | Esc cancel" } else { "" };
+    let ws_display = abbrev_path(&app.current_workspace);
     let status = Paragraph::new(format!(
-        " {} | {}{} | Ctrl+R history | Ctrl+C exit",
+        " {} | {}{} | {} | Ctrl+R history | Ctrl+C exit",
         app.primary_provider.as_str(),
         providers_label(&app.available_providers),
         cancel_hint,
+        ws_display,
     ))
     .style(theme.status_style());
     f.render_widget(status, status_chunk);
@@ -324,6 +419,8 @@ fn build_hint_line(app: &App, theme: ThemePalette) -> Line<'static> {
 
     let label = if app.active_mention_span().is_some() {
         " agent suggestions (Tab cycle): "
+    } else if app.input.starts_with("/workspace ") {
+        " directory suggestions (Tab cycle): "
     } else {
         " slash suggestions (Tab cycle): "
     };

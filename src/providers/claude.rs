@@ -56,6 +56,7 @@ fn run_stream_once(
     cmd.arg("--print")
         .arg("--output-format")
         .arg("stream-json")
+        .arg("--include-partial-messages")
         .arg("--verbose")
         .arg("--permission-mode")
         .arg(permission_mode);
@@ -80,6 +81,7 @@ fn run_stream_once(
 
     let mut emitted = false;
     let mut fallback_lines: Vec<String> = Vec::new();
+    let mut assistant_text_seen = String::new();
     for line in reader.lines() {
         let line = line.map_err(|e| format!("claude fallback read failed: {e}"))?;
         if line.trim().is_empty() {
@@ -97,7 +99,7 @@ fn run_stream_once(
                 msg: progress,
             });
         }
-        if let Some(chunk) = extract_delta_text(&line) {
+        if let Some(chunk) = extract_text_chunk(&line, &mut assistant_text_seen) {
             if !chunk.trim().is_empty() {
                 emitted = true;
                 let _ = tx.send(WorkerEvent::AgentChunk { provider, chunk });
@@ -134,7 +136,7 @@ fn run_stream_once(
     {
         return Ok(text);
     }
-    Ok(fallback_lines.last().cloned().unwrap_or_default())
+    Ok(String::new())
 }
 
 pub(crate) fn run_stream(
@@ -150,6 +152,7 @@ pub(crate) fn run_stream(
     cmd.arg("--print")
         .arg("--output-format")
         .arg("stream-json")
+        .arg("--include-partial-messages")
         .arg("--verbose")
         .arg("--permission-mode")
         .arg(&permission_mode);
@@ -176,6 +179,7 @@ pub(crate) fn run_stream(
     let mut saw_quota_error = false;
     let mut emitted = false;
     let mut emitted_non_quota = false;
+    let mut assistant_text_seen = String::new();
     for line in reader.lines() {
         let line = line.map_err(|e| format!("claude stream read failed: {e}"))?;
         if line.trim().is_empty() {
@@ -196,7 +200,7 @@ pub(crate) fn run_stream(
                 msg: progress,
             });
         }
-        if let Some(chunk) = extract_delta_text(&line) {
+        if let Some(chunk) = extract_text_chunk(&line, &mut assistant_text_seen) {
             if !chunk.trim().is_empty() {
                 if is_quota_error_text(&chunk) {
                     saw_quota_error = true;
@@ -237,11 +241,7 @@ pub(crate) fn run_stream(
             }
             return Ok(text);
         }
-        let last = fallback_lines.last().cloned().unwrap_or_default();
-        if is_quota_error_text(&last) {
-            return Err(format!("claude quota/rate limit: {}", last));
-        }
-        return Ok(last);
+        return Ok(String::new());
     }
 
     let mut mode_for_fallback = permission_mode.clone();
@@ -290,7 +290,38 @@ fn parse_json_line(line: &str) -> Option<Value> {
     serde_json::from_str(line).ok()
 }
 
-fn extract_delta_text(line: &str) -> Option<String> {
+fn extract_text_chunk(line: &str, assistant_text_seen: &mut String) -> Option<String> {
+    if let Some(text) = extract_stream_delta_text(line) {
+        // Update assistant_text_seen so the fallback assistant-snapshot path
+        // doesn't re-emit the same content when --include-partial-messages
+        // sends a full cumulative snapshot after each delta.
+        assistant_text_seen.push_str(&text);
+        return Some(text);
+    }
+
+    let assistant_text = extract_assistant_text(line)?;
+    if assistant_text == *assistant_text_seen {
+        return None;
+    }
+
+    let delta = assistant_text
+        .strip_prefix(assistant_text_seen.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // assistant_text doesn't start with what we've seen so far.
+            // This can happen if the snapshot lags or reorders content blocks.
+            // Avoid re-emitting the full text; return empty to skip.
+            String::new()
+        });
+    *assistant_text_seen = assistant_text;
+    if delta.is_empty() {
+        None
+    } else {
+        Some(delta)
+    }
+}
+
+fn extract_stream_delta_text(line: &str) -> Option<String> {
     let value = parse_json_line(line)?;
     if value.get("type")?.as_str()? != "stream_event" {
         return None;
@@ -306,6 +337,32 @@ fn extract_delta_text(line: &str) -> Option<String> {
         }
     }
     delta.get("text")?.as_str().map(|s| s.to_string())
+}
+
+fn extract_assistant_text(line: &str) -> Option<String> {
+    let value = parse_json_line(line)?;
+    if value.get("type")?.as_str()? != "assistant" {
+        return None;
+    }
+    let content = value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)?;
+
+    let mut merged = String::new();
+    for item in content {
+        if item.get("type").and_then(Value::as_str) != Some("text") {
+            continue;
+        }
+        if let Some(text) = item.get("text").and_then(Value::as_str) {
+            merged.push_str(text);
+        }
+    }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    }
 }
 
 fn extract_tool_use(line: &str) -> Option<String> {
@@ -475,21 +532,7 @@ pub(crate) fn run_sync(prompt: &str, timeout_secs: u64) -> std::result::Result<S
 fn extract_fallback_text(line: &str) -> Option<String> {
     let value = parse_json_line(line)?;
     match value.get("type")?.as_str()? {
-        "assistant" => value
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_array)
-            .and_then(|arr| {
-                arr.iter().find_map(|item| {
-                    if item.get("type").and_then(Value::as_str) == Some("text") {
-                        item.get("text")
-                            .and_then(Value::as_str)
-                            .map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-            }),
+        "assistant" => extract_assistant_text(line),
         "result" => value
             .get("result")
             .and_then(Value::as_str)
