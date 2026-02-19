@@ -627,11 +627,13 @@ impl App {
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
             KeyCode::Esc => {
-                if self.running {
-                    // Kill all child processes
-                    if let Ok(pids) = self.child_pids.lock() {
-                        for &pid in pids.iter() {
-                            kill_pid(pid);
+                if self.is_running() {
+                    // Kill all child processes across all active runs
+                    for run in &self.active_runs {
+                        if let Ok(pids) = run.child_pids.lock() {
+                            for &pid in pids.iter() {
+                                kill_pid(pid);
+                            }
                         }
                     }
                     // Mark running entries as cancelled

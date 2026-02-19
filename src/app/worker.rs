@@ -48,15 +48,16 @@ impl App {
     }
 
     pub(super) fn interrupt_running_task(&mut self, reason: &str) {
-        if !self.running {
+        if !self.is_running() {
             return;
         }
 
-        if let Ok(mut pids) = self.child_pids.lock() {
-            for &pid in pids.iter() {
-                kill_pid(pid);
+        for run in &self.active_runs {
+            if let Ok(pids) = run.child_pids.lock() {
+                for &pid in pids.iter() {
+                    kill_pid(pid);
+                }
             }
-            pids.clear();
         }
 
         for &idx in self.agent_entries.values() {
@@ -85,9 +86,23 @@ impl App {
     }
 
     pub(super) fn poll_worker(&mut self) -> bool {
-        if let Some(rx) = self.rx.clone() {
-            let mut processed_any = false;
-            let mut render_changed = false;
+        if !self.is_running() {
+            return false;
+        }
+
+        // Clone receivers so we can hold &mut self while processing events.
+        let rxs: Vec<(usize, crossbeam_channel::Receiver<WorkerEvent>)> = self
+            .active_runs
+            .iter()
+            .enumerate()
+            .map(|(i, run)| (i, run.rx.clone()))
+            .collect();
+
+        let mut processed_any = false;
+        let mut render_changed = false;
+        let mut completed_run_indices: Vec<usize> = Vec::new();
+
+        'outer: for (run_idx, rx) in &rxs {
             loop {
                 match rx.try_recv() {
                     Ok(WorkerEvent::AgentStart(provider)) => {
@@ -222,10 +237,29 @@ impl App {
                         render_changed = true;
                         let elapsed_secs = self.running_elapsed_secs();
                         self.finished_elapsed_secs = elapsed_secs;
-                        self.finished_provider_name = if self.run_target.trim().is_empty() {
-                            self.primary_provider.as_str().to_string()
-                        } else {
-                            self.run_target.clone()
+                        // Derive the display name from the agents that actually ran,
+                        // not the dispatch target, so the spinner always names the
+                        // real provider(s) rather than the routing target.
+                        self.finished_provider_name = {
+                            let mut sorted: Vec<Provider> =
+                                self.agent_entries.keys().copied().collect();
+                            sorted.sort_by_key(|p| match p {
+                                Provider::Claude => 0u8,
+                                Provider::Codex => 1u8,
+                            });
+                            if sorted.is_empty() {
+                                if self.run_target.trim().is_empty() {
+                                    self.primary_provider.as_str().to_string()
+                                } else {
+                                    self.run_target.clone()
+                                }
+                            } else {
+                                sorted
+                                    .iter()
+                                    .map(|p| p.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" + ")
+                            }
                         };
                         if self.assistant_idx.is_some() {
                             if !self.stream_had_chunk {
@@ -274,13 +308,12 @@ impl App {
                                 }
                             }
                         }
-                        self.clear_running_state();
-                        self.finished_at = Some(Instant::now());
                         if self.last_tool_event.is_empty() {
                             self.last_tool_event = "run completed".to_string();
                         }
                         self.last_status = "done".to_string();
-                        break;
+                        completed_run_indices.push(*run_idx);
+                        continue 'outer;
                     }
                     Ok(WorkerEvent::Tool { provider, msg }) => {
                         processed_any = true;
@@ -288,7 +321,19 @@ impl App {
                         if msg.trim().is_empty() {
                             continue;
                         }
-                        if let Some(ap) = provider.or(self.active_provider) {
+                        // In single-agent mode fall back to active_provider so
+                        // tool events without an explicit provider are still
+                        // tracked.  In multi-agent mode active_provider is
+                        // unreliable (last AgentStart wins), so only record
+                        // events that carry an explicit provider.
+                        let effective = provider.or_else(|| {
+                            if self.agent_entries.len() <= 1 {
+                                self.active_provider
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(ap) = effective {
                             self.agent_tool_event.insert(ap, msg.clone());
                         }
                         self.last_tool_event = msg.clone();
@@ -341,8 +386,11 @@ impl App {
                     Ok(WorkerEvent::Error(err)) => {
                         processed_any = true;
                         render_changed = true;
-                        if let Some(provider) = self.active_provider {
-                            if let Some(i) = self.agent_entries.get(&provider).copied() {
+                        if !self.agent_entries.is_empty() {
+                            // Mark every in-flight agent entry as failed.
+                            let indices: Vec<usize> =
+                                self.agent_entries.values().copied().collect();
+                            for i in indices {
                                 if let Some(entry) = self.entries.get_mut(i) {
                                     if entry.text.contains(WORKING_PLACEHOLDER) {
                                         entry.text =
@@ -360,17 +408,20 @@ impl App {
                             }
                         }
                         self.push_entry(EntryKind::Error, err);
-                        self.clear_running_state();
                         self.last_tool_event = "run failed".to_string();
                         self.last_status = "error".to_string();
-                        break;
+                        completed_run_indices.push(*run_idx);
+                        continue 'outer;
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => break,
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         processed_any = true;
                         render_changed = true;
-                        if let Some(provider) = self.active_provider {
-                            if let Some(i) = self.agent_entries.get(&provider).copied() {
+                        if !self.agent_entries.is_empty() {
+                            // Mark every in-flight agent entry as disconnected.
+                            let indices: Vec<usize> =
+                                self.agent_entries.values().copied().collect();
+                            for i in indices {
                                 if let Some(entry) = self.entries.get_mut(i) {
                                     if entry.text.contains(WORKING_PLACEHOLDER) {
                                         entry.text = entry.text.replacen(
@@ -390,18 +441,25 @@ impl App {
                                 }
                             }
                         }
-                        self.clear_running_state();
                         self.last_tool_event = "worker disconnected".to_string();
-                        break;
+                        completed_run_indices.push(*run_idx);
+                        continue 'outer;
                     }
                 }
             }
-            if render_changed {
-                self.follow_scroll();
-            }
-            processed_any
-        } else {
-            false
         }
+
+        // Remove completed runs in reverse order to keep indices valid.
+        completed_run_indices.sort_unstable_by(|a, b| b.cmp(a));
+        completed_run_indices.dedup();
+        for idx in completed_run_indices {
+            self.clear_run(idx);
+            self.finished_at = Some(Instant::now());
+        }
+
+        if render_changed {
+            self.follow_scroll();
+        }
+        processed_any
     }
 }

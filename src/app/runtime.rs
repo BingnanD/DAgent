@@ -20,7 +20,7 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
         if app.poll_worker() {
             state_changed = true;
         }
-        if app.running && last_spinner_tick.elapsed() >= Duration::from_millis(SPINNER_TICK_MS) {
+        if app.is_running() && last_spinner_tick.elapsed() >= Duration::from_millis(SPINNER_TICK_MS) {
             app.spinner_idx = (app.spinner_idx + 1) % 8;
             last_spinner_tick = Instant::now();
             state_changed = true;
@@ -44,7 +44,7 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
         }
 
         if needs_draw {
-            if app.running
+            if app.is_running()
                 && last_draw_at.elapsed() < Duration::from_millis(RUNNING_DRAW_INTERVAL_MS)
             {
                 // Hold briefly to batch incoming chunks and avoid per-frame flashing.
@@ -69,7 +69,7 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resu
             break;
         }
 
-        let timeout = if app.running {
+        let timeout = if app.is_running() {
             Duration::from_millis(ACTIVE_POLL_MS)
         } else {
             Duration::from_millis(IDLE_POLL_MS)
@@ -144,7 +144,7 @@ fn flush_new_log_lines(
     // remains visible in transcript scrollback.
     let lines: &[Line<'static>];
     let running_buf;
-    if app.running {
+    if app.is_running() {
         let w = terminal.size().map(|s| s.width).unwrap_or(80).max(1);
         running_buf = app.running_flush_log_lines(w);
         lines = &running_buf;
@@ -165,12 +165,12 @@ fn flush_new_log_lines(
     let append_ranges = compute_flush_append_ranges(
         &flushed_plain,
         &current_plain,
-        app.running,
+        app.is_running(),
         *last_flush_was_running,
     );
     if append_ranges.is_empty() {
         *flushed_log_lines = lines.to_vec();
-        *last_flush_was_running = app.running;
+        *last_flush_was_running = app.is_running();
         return Ok(());
     }
     let mut new_lines = Vec::new();
@@ -207,7 +207,7 @@ fn flush_new_log_lines(
     }
 
     *flushed_log_lines = lines.to_vec();
-    *last_flush_was_running = app.running;
+    *last_flush_was_running = app.is_running();
     Ok(())
 }
 

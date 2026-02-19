@@ -162,7 +162,7 @@ impl App {
                     let content_width = (width as usize).saturating_sub(label_col_width + 1); // +1 for space after divider
 
                     if raw_text.is_empty() {
-                        if !(self.running && is_current_entry) {
+                        if !(self.is_running() && is_current_entry) {
                             lines.push(Line::from(vec![Span::styled(
                                 label_sep.clone(),
                                 label_style,
@@ -344,7 +344,7 @@ impl App {
                 });
 
             let is_running_stream_entry =
-                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
+                self.is_running() && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
             if should_connect_assistant_blocks {
                 let provider = entry_provider.unwrap_or(self.primary_provider);
                 let provider_color = match provider {
@@ -438,7 +438,7 @@ impl App {
                     let indent_sep = format!("{}{}", indent, ASSISTANT_DIVIDER);
                     let content_width = (width as usize).saturating_sub(label_col_width + 1);
                     if raw_text.is_empty() {
-                        if !(self.running && is_current_entry) {
+                        if !(self.is_running() && is_current_entry) {
                             lines.push(Line::from(vec![Span::styled(
                                 label_sep.clone(),
                                 label_style,
@@ -611,7 +611,7 @@ impl App {
                     });
 
             let is_running_stream_entry =
-                self.running && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
+                self.is_running() && matches!(entry.kind, EntryKind::Assistant) && is_current_entry;
             if should_connect_assistant_blocks {
                 let provider = entry_provider.unwrap_or(self.primary_provider);
                 let provider_color = match provider {
@@ -640,7 +640,7 @@ impl App {
     /// Render only the currently-active streaming entries for the live TUI area.
     /// Returns empty when not running or no real content has arrived yet.
     pub(super) fn render_active_streaming_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if !self.running {
+        if !self.is_running() {
             return Vec::new();
         }
 

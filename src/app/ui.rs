@@ -44,8 +44,8 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         .saturating_sub(INPUT_HORIZONTAL_INSET)
         .max(1);
 
-    let show_finished = app.finished_at.is_some() && !app.running;
-    let activity_content_rows = if app.running {
+    let show_finished = app.finished_at.is_some() && !app.is_running();
+    let activity_content_rows = if app.is_running() {
         let spinner_agents = app.agent_entries.len().max(1) as u16;
         let spinner_rows = spinner_agents;
         let max_rows_by_agent = spinner_agents.saturating_mul(MAX_SPINNER_ROWS_PER_AGENT);
@@ -81,7 +81,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 
     // Live transcript: streaming content rendered in the TUI viewport so it
     // can be redrawn in-place each frame without touching append-only scrollback.
-    let live_lines = if app.running {
+    let live_lines = if app.is_running() {
         app.render_active_streaming_lines(frame_area.width.max(1))
     } else {
         Vec::new()
@@ -168,39 +168,55 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let status_chunk = chunks[section_idx];
 
     // Live transcript: streaming content shown in-place in the TUI viewport.
-    // The label line (e.g. "claude │ ...") is pinned as a sticky header so it
-    // stays visible even when the body content grows and starts scrolling.
+    // For a single agent, the label line (e.g. "claude │ ...") is pinned as a
+    // sticky header so the agent identity stays visible as content scrolls.
+    // For multiple concurrent agents, each line already carries its own label
+    // prefix, so we skip the sticky header and tail-scroll the combined output.
     if let Some(area) = live_chunk {
         if !live_lines.is_empty() {
-            let header_line = live_lines[0].clone();
-            let body_lines = live_lines[1..].to_vec();
-
-            if area.height <= 1 || body_lines.is_empty() {
-                // Not enough room for a split — just show the header.
-                let para = Paragraph::new(Text::from(vec![header_line]))
-                    .wrap(Wrap { trim: false });
-                f.render_widget(para, area);
-            } else {
-                let split = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(1)])
-                    .split(area);
-
-                // Sticky label header — never scrolled away.
-                let header_para = Paragraph::new(Text::from(vec![header_line]))
-                    .wrap(Wrap { trim: false });
-                f.render_widget(header_para, split[0]);
-
-                // Scrollable body — always shows the latest content at the bottom.
+            let is_multi_agent = app.agent_entries.len() >= 2;
+            if is_multi_agent {
+                // Multi-agent: show the tail of the combined live output.
                 let w = frame_area.width.max(1);
-                let body_rows = Paragraph::new(Text::from(body_lines.clone()))
+                let total_rows = Paragraph::new(Text::from(live_lines.clone()))
                     .wrap(Wrap { trim: false })
                     .line_count(w) as u16;
-                let body_scroll = body_rows.saturating_sub(split[1].height);
-                let body_para = Paragraph::new(Text::from(body_lines))
+                let scroll = total_rows.saturating_sub(area.height);
+                let para = Paragraph::new(Text::from(live_lines))
                     .wrap(Wrap { trim: false })
-                    .scroll((body_scroll, 0));
-                f.render_widget(body_para, split[1]);
+                    .scroll((scroll, 0));
+                f.render_widget(para, area);
+            } else {
+                let header_line = live_lines[0].clone();
+                let body_lines = live_lines[1..].to_vec();
+
+                if area.height <= 1 || body_lines.is_empty() {
+                    // Not enough room for a split — just show the header.
+                    let para = Paragraph::new(Text::from(vec![header_line]))
+                        .wrap(Wrap { trim: false });
+                    f.render_widget(para, area);
+                } else {
+                    let split = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(1), Constraint::Min(1)])
+                        .split(area);
+
+                    // Sticky label header — never scrolled away.
+                    let header_para = Paragraph::new(Text::from(vec![header_line]))
+                        .wrap(Wrap { trim: false });
+                    f.render_widget(header_para, split[0]);
+
+                    // Scrollable body — always shows the latest content at the bottom.
+                    let w = frame_area.width.max(1);
+                    let body_rows = Paragraph::new(Text::from(body_lines.clone()))
+                        .wrap(Wrap { trim: false })
+                        .line_count(w) as u16;
+                    let body_scroll = body_rows.saturating_sub(split[1].height);
+                    let body_para = Paragraph::new(Text::from(body_lines))
+                        .wrap(Wrap { trim: false })
+                        .scroll((body_scroll, 0));
+                    f.render_widget(body_para, split[1]);
+                }
             }
         }
     }
@@ -265,7 +281,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     }
 
     // Status bar
-    let cancel_hint = if app.running { " | Esc cancel" } else { "" };
+    let cancel_hint = if app.is_running() { " | Esc cancel" } else { "" };
     let ws_display = abbrev_path(&app.current_workspace);
     let status = Paragraph::new(format!(
         " {} | {}{} | {} | Ctrl+R history | Ctrl+C exit",
@@ -497,7 +513,7 @@ fn build_activity_lines(
     max_rows: u16,
 ) -> Vec<Line<'static>> {
     // Finished: show green dot + "completed in XX:XX" persistently.
-    if app.finished_at.is_some() && !app.running {
+    if app.finished_at.is_some() && !app.is_running() {
         let dot_color = Color::Rgb(120, 120, 128);
         let elapsed = format!(
             "{:02}:{:02}",
@@ -522,7 +538,7 @@ fn build_activity_lines(
             ),
         ])];
     }
-    if app.running {
+    if app.is_running() {
         let frame = app.spinner_idx % BREATH_SCALE_PCT.len();
 
         let mut lines = Vec::new();

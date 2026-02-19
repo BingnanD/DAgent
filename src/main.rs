@@ -231,11 +231,17 @@ fn cleaned_assistant_text(entry: &LogEntry) -> String {
         text.to_string()
     };
     let normalized = strip_leading_blank_lines(&cleaned);
-    let cleaned_trimmed = normalized.trim();
-    if cleaned_trimmed.is_empty() || cleaned_trimmed == WORKING_PLACEHOLDER {
+    // Strip collaboration progress lines so they never appear in the rendered transcript.
+    let filtered: String = normalized
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(TRANSCRIPT_PROGRESS_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let filtered_trimmed = filtered.trim();
+    if filtered_trimmed.is_empty() || filtered_trimmed == WORKING_PLACEHOLDER {
         String::new()
     } else {
-        normalized
+        strip_leading_blank_lines(&filtered)
     }
 }
 

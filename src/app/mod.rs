@@ -72,6 +72,14 @@ struct PendingPaste {
     content: String,
 }
 
+/// State for one active worker run (may involve one or more providers).
+struct ActiveRun {
+    /// Providers involved in this run (empty for slash-command runs).
+    providers: Vec<Provider>,
+    rx: Receiver<WorkerEvent>,
+    child_pids: Arc<Mutex<Vec<u32>>>,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Mode {
     Normal,
@@ -137,7 +145,10 @@ impl RenderCache {
 struct App {
     primary_provider: Provider,
     available_providers: Vec<Provider>,
-    running: bool,
+    /// Providers currently executing a task.
+    running_providers: HashSet<Provider>,
+    /// Active worker runs; each has its own channel and child-process list.
+    active_runs: Vec<ActiveRun>,
     should_quit: bool,
     spinner_idx: usize,
     mode: Mode,
@@ -163,7 +174,6 @@ struct App {
     allow_high_risk_tools: HashSet<String>,
     theme: ThemePreset,
 
-    rx: Option<Receiver<WorkerEvent>>,
     assistant_idx: Option<usize>,
     stream_had_chunk: bool,
     agent_entries: HashMap<Provider, usize>,
@@ -186,7 +196,6 @@ struct App {
     session_id: String,
     memory: Option<MemoryStore>,
     skills: Option<SkillStore>,
-    child_pids: Arc<Mutex<Vec<u32>>>,
 
     /// Current working directory shown in the status bar and updated by /workspace.
     current_workspace: String,
@@ -221,7 +230,8 @@ impl App {
         let mut app = Self {
             primary_provider,
             available_providers,
-            running: false,
+            running_providers: HashSet::new(),
+            active_runs: Vec::new(),
             should_quit: false,
             spinner_idx: 0,
             mode: Mode::Normal,
@@ -242,7 +252,6 @@ impl App {
             approval: None,
             allow_high_risk_tools: HashSet::new(),
             theme: default_theme(),
-            rx: None,
             assistant_idx: None,
             stream_had_chunk: false,
             agent_entries: HashMap::new(),
@@ -263,7 +272,6 @@ impl App {
             session_id: default_session_id(),
             memory,
             skills,
-            child_pids: Arc::new(Mutex::new(Vec::new())),
             current_workspace: std::env::current_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| ".".to_string()),
@@ -281,18 +289,72 @@ impl App {
         self.render_generation = self.render_generation.wrapping_add(1);
     }
 
-    fn start_running_state(&mut self, target: String) {
-        self.running = true;
+    /// Returns true when any worker run is active (agent or slash-command).
+    fn is_running(&self) -> bool {
+        !self.active_runs.is_empty() || !self.running_providers.is_empty()
+    }
+
+    /// Test helper: register a fake active run so poll_worker will drain `rx`.
+    #[cfg(test)]
+    pub(super) fn push_test_run(
+        &mut self,
+        providers: Vec<Provider>,
+        rx: crossbeam_channel::Receiver<WorkerEvent>,
+    ) {
+        for &p in &providers {
+            self.running_providers.insert(p);
+        }
+        self.active_runs.push(ActiveRun {
+            providers,
+            rx,
+            child_pids: Arc::new(Mutex::new(Vec::new())),
+        });
+    }
+
+    fn start_running_state(
+        &mut self,
+        target: String,
+        providers: Vec<Provider>,
+        rx: Receiver<WorkerEvent>,
+        child_pids: Arc<Mutex<Vec<u32>>>,
+    ) {
+        for &p in &providers {
+            self.running_providers.insert(p);
+        }
+        self.active_runs.push(ActiveRun { providers, rx, child_pids });
         self.finished_at = None;
         self.run_started_at = Some(Instant::now());
         self.run_target = target;
+        self.stream_had_chunk = false;
     }
 
+    /// Remove one completed run and clean up its per-provider state.
+    /// Clears global state only when all runs have finished.
+    fn clear_run(&mut self, run_idx: usize) {
+        let run = self.active_runs.swap_remove(run_idx);
+        for p in &run.providers {
+            self.running_providers.remove(p);
+            self.agent_entries.remove(p);
+            self.agent_had_chunk.remove(p);
+            self.agent_chars.remove(p);
+            self.agent_verb_idx.remove(p);
+            self.agent_started_at.remove(p);
+            self.agent_tool_event.remove(p);
+        }
+        if self.active_runs.is_empty() {
+            self.activity_log.clear();
+            self.active_provider = None;
+            self.stream_had_chunk = false;
+            self.assistant_idx = None;
+            self.run_started_at = None;
+            self.run_target.clear();
+        }
+    }
+
+    /// Clear all active runs at once (used by interrupt / ESC).
     fn clear_running_state(&mut self) {
-        self.running = false;
-        self.rx = None;
-        self.assistant_idx = None;
-        self.stream_had_chunk = false;
+        self.running_providers.clear();
+        self.active_runs.clear();
         self.agent_entries.clear();
         self.agent_had_chunk.clear();
         self.agent_chars.clear();
@@ -301,11 +363,10 @@ impl App {
         self.agent_tool_event.clear();
         self.activity_log.clear();
         self.active_provider = None;
+        self.stream_had_chunk = false;
+        self.assistant_idx = None;
         self.run_started_at = None;
         self.run_target.clear();
-        if let Ok(mut pids) = self.child_pids.lock() {
-            pids.clear();
-        }
     }
 
     #[allow(dead_code)]
@@ -401,7 +462,7 @@ impl App {
     /// scrollback is append-only — re-flushing a growing line produces duplicate
     /// accumulated lines. Streaming content remains visible in the TUI viewport.
     fn running_flush_log_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if !self.running {
+        if !self.is_running() {
             return self.render_entries_lines(width);
         }
 

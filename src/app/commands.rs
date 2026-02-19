@@ -14,7 +14,8 @@ impl App {
             return;
         }
 
-        if self.running {
+        // Slash-command worker is running — block everything.
+        if self.assistant_idx.is_some() {
             let msg = "task is running, wait...";
             if !self.last_system_entry_is(msg) {
                 self.push_entry(EntryKind::System, msg);
@@ -36,6 +37,27 @@ impl App {
                     self.clear_input_buffer();
                     return;
                 }
+            }
+        }
+
+        // For provider submissions, block only if the target provider(s) are busy.
+        if !typed_line.starts_with('/') {
+            let target_providers: Vec<Provider> = match &dispatch_target {
+                DispatchTarget::Primary => vec![self.primary_provider],
+                DispatchTarget::Provider(p) => vec![*p],
+                DispatchTarget::Providers(ps) => ps.clone(),
+            };
+            let busy_names: Vec<&str> = target_providers
+                .iter()
+                .filter(|&&p| self.running_providers.contains(&p))
+                .map(|p| p.as_str())
+                .collect();
+            if !busy_names.is_empty() {
+                let msg = format!("{} is running, wait...", busy_names.join(", "));
+                if !self.last_system_entry_is(&msg) {
+                    self.push_entry(EntryKind::System, msg);
+                }
+                return;
             }
         }
 
@@ -151,10 +173,6 @@ impl App {
                 }
             }
         }
-        self.assistant_idx = None;
-        self.agent_entries.clear();
-        self.agent_had_chunk.clear();
-        self.active_provider = None;
         let run_target = if is_slash {
             "command".to_string()
         } else {
@@ -178,8 +196,6 @@ impl App {
         }
         self.autoscroll = true;
         self.scroll = self.scroll_max();
-        self.stream_had_chunk = false;
-        self.start_running_state(run_target.clone());
         self.last_tool_event.clear();
         self.last_status = format!("dispatching {}", run_target);
         self.clear_input_buffer();
@@ -193,9 +209,10 @@ impl App {
         let provider = self.primary_provider;
         let available = self.available_providers.clone();
         let child_pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
-        self.child_pids = child_pids.clone();
         let (tx, rx) = unbounded::<WorkerEvent>();
         let dispatch_target_for_worker = dispatch_target.clone();
+        let run_providers = if is_slash { Vec::new() } else { providers.clone() };
+        let child_pids_for_thread = child_pids.clone();
         std::thread::spawn(move || {
             execute_line(
                 provider,
@@ -203,10 +220,10 @@ impl App {
                 line_for_worker,
                 dispatch_target_for_worker,
                 tx,
-                child_pids,
+                child_pids_for_thread,
             )
         });
-        self.rx = Some(rx);
+        self.start_running_state(run_target.clone(), run_providers, rx, child_pids);
     }
 
     pub(super) fn handle_primary_change(&mut self, target: &str) {

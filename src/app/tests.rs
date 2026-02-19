@@ -61,7 +61,7 @@ fn tool_events_follow_bottom_when_autoscroll_on() {
     let before_max = app.scroll_max();
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![], rx);
     tx.send(WorkerEvent::Tool {
         provider: None,
         msg: "invoke bash ls -la".to_string(),
@@ -81,7 +81,7 @@ fn tool_events_do_not_enter_transcript_entries() {
     let before_len = app.entries.len();
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![], rx);
     tx.send(WorkerEvent::Tool {
         provider: Some(Provider::Claude),
         msg: "calling tool: Bash".to_string(),
@@ -107,11 +107,10 @@ fn coordination_tool_events_enter_transcript_entries_in_multi_agent_run() {
     );
     app.agent_entries.insert(Provider::Claude, 0);
     app.agent_entries.insert(Provider::Codex, 1);
-    app.running = true;
     let before_len = app.entries.len();
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![Provider::Claude, Provider::Codex], rx);
     tx.send(WorkerEvent::Tool {
         provider: None,
         msg: "task decomposed, dispatching to agents...".to_string(),
@@ -141,10 +140,9 @@ fn progress_events_enter_transcript_entries_for_multi_agent_run() {
     );
     app.agent_entries.insert(Provider::Claude, 0);
     app.agent_entries.insert(Provider::Codex, 1);
-    app.running = true;
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![Provider::Claude, Provider::Codex], rx);
     tx.send(WorkerEvent::Progress {
         provider: Provider::Claude,
         msg: "thinking...".to_string(),
@@ -180,10 +178,9 @@ fn duplicate_progress_events_are_deduped_in_multi_agent_transcript() {
     );
     app.agent_entries.insert(Provider::Claude, 0);
     app.agent_entries.insert(Provider::Codex, 1);
-    app.running = true;
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![Provider::Claude, Provider::Codex], rx);
     tx.send(WorkerEvent::Progress {
         provider: Provider::Claude,
         msg: "thinking...".to_string(),
@@ -221,10 +218,9 @@ fn agent_chunks_append_into_owned_agent_panel() {
     app.agent_entries.insert(Provider::Codex, 1);
     app.agent_had_chunk.insert(Provider::Claude, false);
     app.agent_had_chunk.insert(Provider::Codex, false);
-    app.running = true;
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![Provider::Claude, Provider::Codex], rx);
     tx.send(WorkerEvent::AgentChunk {
         provider: Provider::Claude,
         chunk: "claude process text".to_string(),
@@ -253,11 +249,10 @@ fn agent_chunk_marks_stream_had_chunk() {
     );
     app.agent_entries.insert(Provider::Claude, 0);
     app.agent_had_chunk.insert(Provider::Claude, false);
-    app.running = true;
     app.stream_had_chunk = false;
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![Provider::Claude], rx);
     tx.send(WorkerEvent::AgentChunk {
         provider: Provider::Claude,
         chunk: "hello".to_string(),
@@ -283,7 +278,7 @@ fn running_flush_skips_active_streaming_entry() {
     );
     app.agent_entries.insert(Provider::Claude, 1);
     app.agent_had_chunk.insert(Provider::Claude, false);
-    app.running = true;
+    app.running_providers.insert(Provider::Claude);
 
     // Before any chunk: placeholder entry is excluded from flush.
     let before = app
@@ -307,7 +302,7 @@ fn running_flush_skips_active_streaming_entry() {
     assert!(!after.iter().any(|line| line.contains("first output line")));
 
     // Once the run ends (agent_entries cleared), the entry is included.
-    app.running = false;
+    app.running_providers.clear();
     app.agent_entries.clear();
     let done = app
         .running_flush_log_lines(80)
@@ -327,7 +322,7 @@ fn agent_done_sets_elapsed_only_for_active_entry() {
     app.run_started_at = Some(Instant::now());
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![Provider::Claude], rx);
     tx.send(WorkerEvent::AgentDone(Provider::Claude))
         .expect("send agent done event");
 
@@ -340,12 +335,11 @@ fn agent_done_sets_elapsed_only_for_active_entry() {
 fn done_uses_run_target_for_finished_provider_label() {
     let mut app = App::new();
     app.primary_provider = Provider::Codex;
-    app.running = true;
     app.run_started_at = Some(Instant::now());
     app.run_target = "claude".to_string();
 
     let (tx, rx) = unbounded::<WorkerEvent>();
-    app.rx = Some(rx);
+    app.push_test_run(vec![], rx);
     tx.send(WorkerEvent::Done(String::new()))
         .expect("send done event");
 
@@ -360,11 +354,11 @@ fn assistant_header_text_stable_across_running_done_transition() {
     app.push_entry(EntryKind::Assistant, "[codex]\nanswer");
     app.entries[0].elapsed_secs = Some(12);
     app.agent_entries.insert(Provider::Codex, 0);
-    app.running = true;
+    app.running_providers.insert(Provider::Codex);
 
     let running_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
 
-    app.running = false;
+    app.running_providers.clear();
     app.agent_entries.clear();
     let done_header = flatten_line_to_plain(&app.render_entries_lines(80)[0]);
 
@@ -417,7 +411,7 @@ fn assistant_label_color_stays_provider_colored_while_running() {
     app.entries.clear();
     app.push_entry(EntryKind::Assistant, "[claude]\nstreaming");
     app.agent_entries.insert(Provider::Claude, 0);
-    app.running = true;
+    app.running_providers.insert(Provider::Claude);
 
     let lines = app.render_entries_lines(80);
     let label_fg = lines
@@ -721,7 +715,7 @@ fn running_streaming_assistant_omits_trailing_blank_separator() {
     app.entries.clear();
     app.push_entry(EntryKind::Assistant, "[codex]\nstreaming");
     app.agent_entries.insert(Provider::Codex, 0);
-    app.running = true;
+    app.running_providers.insert(Provider::Codex);
 
     let rendered = flatten_lines_to_plain(&app.render_entries_lines(80));
 
@@ -779,7 +773,8 @@ fn mem_command_reports_backend_unavailable_in_tests() {
 #[test]
 fn running_submit_hint_is_not_duplicated() {
     let mut app = App::new();
-    app.running = true;
+    app.entries.clear();
+    app.running_providers.insert(app.primary_provider);
     app.input = "hello".to_string();
     app.cursor = app.input.len();
 
@@ -790,7 +785,7 @@ fn running_submit_hint_is_not_duplicated() {
         .entries
         .iter()
         .filter(|entry| {
-            matches!(entry.kind, EntryKind::System) && entry.text == "task is running, wait..."
+            matches!(entry.kind, EntryKind::System) && entry.text.ends_with("is running, wait...")
         })
         .count();
     assert_eq!(wait_count, 1);
