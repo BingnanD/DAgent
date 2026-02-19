@@ -104,7 +104,7 @@ impl App {
         {
             let line_count_before_entry = lines.len();
             let entry_provider =
-                extract_agent_name(&entry.text).and_then(|n| provider_from_name(&n));
+                extract_agent_name(&entry.text).and_then(|n| Provider::from_name(&n));
             let is_current_entry =
                 self.assistant_idx == Some(idx) || active_entry_indices.contains(&idx);
             match entry.kind {
@@ -338,7 +338,7 @@ impl App {
                 && next_entry.is_some_and(|next| {
                     let current_provider = entry_provider.unwrap_or(self.primary_provider);
                     let next_provider = extract_agent_name(&next.text)
-                        .and_then(|n| provider_from_name(&n))
+                        .and_then(|n| Provider::from_name(&n))
                         .unwrap_or(self.primary_provider);
                     current_provider == next_provider
                 });
@@ -387,7 +387,7 @@ impl App {
             }
             let line_count_before_entry = lines.len();
             let entry_provider =
-                extract_agent_name(&entry.text).and_then(|n| provider_from_name(&n));
+                extract_agent_name(&entry.text).and_then(|n| Provider::from_name(&n));
             let is_current_entry =
                 self.assistant_idx == Some(idx) || active_entry_indices.contains(&idx);
             match entry.kind {
@@ -605,7 +605,7 @@ impl App {
                     .is_some_and(|next| {
                         let current_provider = entry_provider.unwrap_or(self.primary_provider);
                         let next_provider = extract_agent_name(&next.text)
-                            .and_then(|n| provider_from_name(&n))
+                            .and_then(|n| Provider::from_name(&n))
                             .unwrap_or(self.primary_provider);
                         current_provider == next_provider
                     });

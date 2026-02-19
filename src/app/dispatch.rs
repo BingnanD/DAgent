@@ -31,7 +31,7 @@ pub(super) fn parse_dispatch_override(
     let mut seen = HashSet::new();
     for mention in mentions {
         let name = mention.trim_start_matches("@");
-        let Some(provider) = provider_from_name(name) else {
+        let Some(provider) = Provider::from_name(name) else {
             return Err(format!(
                 "unknown dispatch target {}; use @claude or @codex",
                 mention

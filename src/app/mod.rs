@@ -19,8 +19,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     cleaned_assistant_text, cleaned_assistant_text_for_model, default_commands,
     detect_available_providers, execute_line, extract_agent_name, high_risk_check,
-    input_cursor_position, kill_pid, memory::MemoryStore, ordered_providers, provider_from_name,
-    providers_label, resolve_dispatch_providers, skills::SkillStore, truncate, DispatchTarget,
+    input_cursor_position, kill_pid, memory::MemoryStore, ordered_providers, providers_label,
+    resolve_dispatch_providers, skills::SkillStore, truncate, DispatchTarget,
     TRANSCRIPT_PROGRESS_PREFIX, WORKING_PLACEHOLDER,
 };
 

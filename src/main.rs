@@ -28,9 +28,6 @@ use app::{EntryKind, LogEntry, Provider};
 pub(crate) use orchestrator::execute_line;
 
 const APP_VERSION: &str = "0.2.3";
-// Breathing dot indicator (kept for potential future use).
-#[allow(dead_code)]
-const SPINNER: &[&str] = &["●"];
 const WORKING_PLACEHOLDER: &str = "working...";
 pub(crate) const TRANSCRIPT_PROGRESS_PREFIX: &str = "[progress] ";
 
@@ -197,14 +194,6 @@ fn extract_agent_name(text: &str) -> Option<String> {
     None
 }
 
-fn provider_from_name(name: &str) -> Option<Provider> {
-    match name {
-        "claude" => Some(Provider::Claude),
-        "codex" => Some(Provider::Codex),
-        _ => None,
-    }
-}
-
 fn extract_agent_marker_from_line(line: &str) -> Option<&str> {
     let rest = line.strip_prefix('[')?;
     let end = rest.find(']')?;
@@ -259,16 +248,7 @@ fn strip_leading_blank_lines(text: &str) -> String {
 }
 
 fn cleaned_assistant_text_for_model(entry: &LogEntry) -> String {
-    let cleaned = cleaned_assistant_text(entry);
-    if cleaned.is_empty() {
-        return cleaned;
-    }
-    let filtered = cleaned
-        .lines()
-        .filter(|line| !line.trim_start().starts_with(TRANSCRIPT_PROGRESS_PREFIX))
-        .collect::<Vec<_>>()
-        .join("\n");
-    filtered.trim().to_string()
+    cleaned_assistant_text(entry).trim().to_string()
 }
 
 fn truncate(s: &str, n: usize) -> String {

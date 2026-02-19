@@ -25,6 +25,14 @@ impl Provider {
     pub(crate) fn all() -> [Provider; 2] {
         [Provider::Claude, Provider::Codex]
     }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "claude" => Some(Provider::Claude),
+            "codex" => Some(Provider::Codex),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

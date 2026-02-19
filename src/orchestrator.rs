@@ -871,14 +871,6 @@ fn extract_section_header(line: &str) -> Option<&str> {
     Some(name)
 }
 
-fn provider_from_name(name: &str) -> Option<Provider> {
-    match name {
-        "claude" => Some(Provider::Claude),
-        "codex" => Some(Provider::Codex),
-        _ => None,
-    }
-}
-
 fn parse_decomposition(
     response: &str,
     providers: &[Provider],
@@ -898,7 +890,7 @@ fn parse_decomposition(
                 }
             }
             current_lines.clear();
-            current_provider = provider_from_name(name);
+            current_provider = Provider::from_name(name);
         } else if current_provider.is_some() {
             current_lines.push(line.to_string());
         }
